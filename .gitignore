@@ -1,0 +1,36 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Outils
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Rapports d'audit générés
+reports/*
+!reports/.gitkeep
+
+# Journal SQLite et données de marché locales
+*.db
+*.sqlite
+*.sqlite3
+/data/
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
