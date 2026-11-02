@@ -103,6 +103,7 @@ class StrategyConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     risk: RiskLimits
+    risk_state_file: str = Field(min_length=1)
     strategy: MovingAverageParams
     data: DataConfig
     api_retry: RetryConfig

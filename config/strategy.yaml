@@ -12,12 +12,15 @@ risk:
   max_drawdown_pct: 0.10
   # Protection contre une boucle folle.
   max_orders_per_day: 20
-  # Âge maximal des données avant refus de tout ordre.
+  # Âge maximal du prix de référence d'un ordre. Le signal, lui, doit venir de la dernière séance.
   max_data_age_seconds: 900
   # Variation de prix considérée comme aberrante.
   max_price_change_pct: 0.20
   allow_short: false
   allow_leverage: false
+
+# Kill switch, plus haut du capital et compteur d'ordres. Relatif à la racine du projet.
+risk_state_file: data/risk_state.json
 
 strategy:
   # Stratégie de référence, qui sert à valider la chaîne. Fenêtres conventionnelles, non optimisées.
