@@ -9,6 +9,7 @@ from bot.config import (
     MovingAverageParams,
     RiskLimits,
     Settings,
+    StrategyConfig,
     load_settings,
     load_strategy_config,
 )
@@ -134,6 +135,24 @@ def test_moving_average_params_rejects_invalid_windows(fast_window: int, slow_wi
 def test_project_strategy_windows_are_valid() -> None:
     params = load_strategy_config().strategy
     assert params.fast_window < params.slow_window
+
+
+def project_config_dict(**overrides: Any) -> dict[str, Any]:
+    return {**load_strategy_config().model_dump(), **overrides}
+
+
+def test_benchmark_must_be_in_universe() -> None:
+    raw = project_config_dict()
+    raw["backtest"]["benchmark"] = "ABC"
+    with pytest.raises(ValidationError, match="benchmark"):
+        StrategyConfig.model_validate(raw)
+
+
+def test_in_sample_end_must_follow_data_start() -> None:
+    raw = project_config_dict()
+    raw["backtest"]["in_sample_end"] = raw["data"]["start_date"]
+    with pytest.raises(ValidationError, match="in_sample_end"):
+        StrategyConfig.model_validate(raw)
 
 
 def test_load_strategy_config_missing_file(tmp_path: Path) -> None:

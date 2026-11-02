@@ -112,12 +112,16 @@ class BarStore:
             raise StoreError(f"Empreinte incorrecte pour {symbol} : fichier modifié ou corrompu")
         return pd.read_parquet(bars_path)
 
-    def load_closes(self, symbols: Sequence[str]) -> pd.DataFrame:
-        """Retourne les clôtures, une ligne par séance et une colonne par symbole.
+    def load_column(self, symbols: Sequence[str], column: str) -> pd.DataFrame:
+        """Retourne une colonne des barres, une ligne par séance et une colonne par symbole.
 
         Une séance absente pour un symbole reste vide : aucune valeur n'est reportée.
         """
         if not symbols:
             raise StoreError("Aucun symbole demandé")
-        closes = {symbol: self.load(symbol)["close"] for symbol in symbols}
-        return pd.DataFrame(closes).sort_index()
+        values = {symbol: self.load(symbol)[column] for symbol in symbols}
+        return pd.DataFrame(values).sort_index()
+
+    def load_closes(self, symbols: Sequence[str]) -> pd.DataFrame:
+        """Retourne les clôtures, une ligne par séance et une colonne par symbole."""
+        return self.load_column(symbols, "close")

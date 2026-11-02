@@ -1,17 +1,23 @@
-[src/bot/risk/models.py] -> "Nouveau. Définit les types du risque : ordre proposé, état du compte, prix de référence, décision et motifs de refus. Le pouvoir d'achat n'existe pas dans ces types : le risque se mesure toujours sur le capital, donc la marge du compte ne peut pas servir."
+[config/strategy.yaml] -> "Ajout des sections backtest et targets. La fin de l'in-sample est fixée au 2022-12-31 avant tout résultat : les séances suivantes sont réservées à la validation finale. Coûts retenus : 0,01 % de frais et 0,1 % de slippage par ordre."
 
-[src/bot/risk/checks.py] -> "Nouveau. Contrôles purs : prix manquant, périmé ou aberrant, signal qui ne vient pas de la dernière séance terminée, vente à découvert, taille de position, exposition totale, perte journalière et drawdown. Tout ce qui est invérifiable, comme un NaN, est refusé. Un ordre qui réduit une position passe même au-dessus des limites. Fournit aussi les ordres de fermeture du kill switch."
+[src/bot/config.py] -> "Ajout de BacktestConfig et PerformanceTargets, validés au chargement. Le bot refuse de démarrer si ces sections manquent, si le benchmark est hors univers ou si la coupure précède le début des données."
 
-[src/bot/risk/manager.py] -> "Nouveau. Point de passage obligé de tout ordre : applique les contrôles, compte les ordres de la séance et déclenche le kill switch. Celui-ci reste actif jusqu'à un réarmement manuel. L'étape 6 devra faire passer chaque ordre par review et appeler update à chaque cycle."
+[src/bot/data/store.py] -> "Ajout de load_column pour charger n'importe quelle colonne, dont les ouvertures nécessaires au backtest. load_closes garde le même comportement."
 
-[src/bot/risk/state.py] -> "Nouveau. Conserve le kill switch, le plus haut du capital et le compteur d'ordres dans un fichier JSON, pour qu'un redémarrage ne les efface pas. Un fichier illisible arrête le bot au lieu de repartir d'un état vierge. Supprimer ce fichier à la main efface donc ces protections."
+[audit/backtest.py] -> "Nouveau. Backtest net de coûts avec exécution à l'ouverture de t+1, à 10 % du capital par ETF, comparé à SPY sur la même période. Ne peut pas lire l'out-of-sample : les données sont coupées avant tout calcul. N'applique ni le kill switch ni les contrôles de bot.risk. Sans rééquilibrage, un achat peut être réduit ou ignoré quand le cash manque."
 
-[src/bot/config.py] -> "Ajout du champ risk_state_file. Il devient obligatoire dans strategy.yaml : le bot refuse de démarrer s'il manque."
+[audit/metrics.py] -> "Nouveau. Calcule les métriques sur 252 séances par an et un taux sans risque de 0, compare aux objectifs critère par critère, signale les résultats suspects et repère les séances où le kill switch se serait déclenché."
 
-[config/strategy.yaml] -> "Ajout de risk_state_file, dans data/ et donc hors de git. Le commentaire de max_data_age_seconds précise qu'il s'agit de l'âge du prix de référence de l'ordre, et non de celui du signal."
+[audit/registry.py] -> "Nouveau. Inscrit chaque nouvelle variante testée et son premier résultat, pour tenir compte du biais de tests multiples. Relancer une variante identique ne l'ajoute pas."
 
-[tests/test_risk_checks.py] -> "Nouveau. Vérifie chaque contrôle à sa limite exacte, les valeurs NaN et infinies, le refus de la marge, et le passage des ordres qui réduisent le risque."
+[audit/variants.jsonl] -> "Nouveau, à commiter. Registre des variantes, qui contient pour l'instant la stratégie de référence 50/200."
 
-[tests/test_risk_manager.py] -> "Nouveau. Vérifie le déclenchement du kill switch, sa persistance après redémarrage, le compteur d'ordres, le réarmement, et le refus d'approuver un ordre si l'état ne peut pas être enregistré."
+[pyproject.toml] -> "Ajout du module audit dans la mesure de couverture. Le seuil de 80 % s'y applique maintenant aussi."
 
-[MODIF.md] -> "Réécrit pour l'étape 4. Le récapitulatif de l'étape 3 est effacé, comme le prévoit la règle."
+[tests/test_audit_backtest.py] -> "Nouveau. Vérifie l'exécution à t+1 et les coûts sur des exemples calculés à la main, et que modifier les prix de l'out-of-sample ne change rien au rapport."
+
+[tests/test_audit_metrics.py] -> "Nouveau. Vérifie les métriques à la main, les seuils exacts de chaque critère et la relecture du kill switch."
+
+[tests/test_config.py] -> "Ajout des tests sur le benchmark et la date de coupure."
+
+[MODIF.md] -> "Réécrit pour l'étape 5. Le récapitulatif de l'étape 4 est effacé, comme le prévoit la règle."

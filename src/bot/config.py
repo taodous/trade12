@@ -97,6 +97,35 @@ class RetryConfig(BaseModel):
     max_delay_seconds: float = Field(gt=0)
 
 
+class BacktestConfig(BaseModel):
+    """Paramètres du backtest. Les séances après `in_sample_end` sont l'out-of-sample."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    in_sample_end: date
+    initial_capital: float = Field(gt=0)
+    fees_pct: float = Field(ge=0, lt=1)
+    slippage_pct: float = Field(ge=0, lt=1)
+    benchmark: str = Field(min_length=1)
+    report_file: str = Field(min_length=1)
+    registry_file: str = Field(min_length=1)
+
+
+class PerformanceTargets(BaseModel):
+    """Objectifs de performance et seuils de résultats suspects."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    min_annual_return: float
+    max_drawdown_alert: float = Field(gt=0, le=1)
+    max_drawdown_reject: float = Field(gt=0, le=1)
+    min_sharpe: float
+    min_calmar: float
+    min_positive_months: float = Field(ge=0, le=1)
+    suspicious_annual_return: float
+    suspicious_sharpe: float
+
+
 class StrategyConfig(BaseModel):
     """Contenu validé de `config/strategy.yaml`."""
 
@@ -106,7 +135,17 @@ class StrategyConfig(BaseModel):
     risk_state_file: str = Field(min_length=1)
     strategy: MovingAverageParams
     data: DataConfig
+    backtest: BacktestConfig
+    targets: PerformanceTargets
     api_retry: RetryConfig
+
+    @model_validator(mode="after")
+    def _check_backtest(self) -> Self:
+        if self.backtest.benchmark not in self.data.symbols:
+            raise ValueError("benchmark doit faire partie de data.symbols")
+        if self.backtest.in_sample_end <= self.data.start_date:
+            raise ValueError("in_sample_end doit suivre data.start_date")
+        return self
 
 
 def load_settings(env_path: Path = DEFAULT_ENV_PATH) -> Settings:

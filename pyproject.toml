@@ -60,7 +60,7 @@ testpaths = ["tests"]
 addopts = "--strict-markers --cov --cov-report=term-missing"
 
 [tool.coverage.run]
-source = ["bot.strategy", "bot.risk", "bot.execution", "bot.data", "bot.retry"]
+source = ["bot.strategy", "bot.risk", "bot.execution", "bot.data", "bot.retry", "audit"]
 branch = true
 
 [tool.coverage.report]

@@ -45,6 +45,31 @@ data:
   # Relatif à la racine du projet.
   directory: data/bars
 
+backtest:
+  # Séparation fixée avant le premier résultat de performance : date ronde, ni optimisée ni déduite
+  # des données. Les séances suivantes sont l'out-of-sample, réservé à la validation finale.
+  in_sample_end: 2022-12-31
+  initial_capital: 100000.0
+  # Frais réglementaires à la vente, majorés : Alpaca ne prend pas de commission.
+  fees_pct: 0.0001
+  # Prudent pour des ETF liquides, car l'exécution se fait à l'ouverture, où l'écart est plus large.
+  slippage_pct: 0.001
+  benchmark: SPY
+  report_file: reports/backtest_in_sample.json
+  # Registre de toutes les variantes testées, à commiter, pour le biais de tests multiples.
+  registry_file: audit/variants.jsonl
+
+# Objectifs de CLAUDE.md, évalués sur les rendements nets de frais et de slippage.
+targets:
+  min_annual_return: 0.08
+  max_drawdown_alert: 0.10
+  max_drawdown_reject: 0.15
+  min_sharpe: 1.0
+  min_calmar: 1.0
+  min_positive_months: 0.60
+  suspicious_annual_return: 0.30
+  suspicious_sharpe: 2.0
+
 api_retry:
   # Backoff exponentiel sur erreur 429.
   max_attempts: 5
