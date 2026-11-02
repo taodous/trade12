@@ -8,6 +8,7 @@ dependencies = [
     "alpaca-py>=0.44.0",
     "numpy>=2.5.4",
     "pandas>=3.1.0",
+    "pyarrow>=26.0.0",
     "pydantic>=2.14.2",
     "pydantic-settings>=2.16.2",
     "pyyaml>=6.0.3",
@@ -59,7 +60,7 @@ testpaths = ["tests"]
 addopts = "--strict-markers --cov --cov-report=term-missing"
 
 [tool.coverage.run]
-source = ["bot.strategy", "bot.risk", "bot.execution"]
+source = ["bot.strategy", "bot.risk", "bot.execution", "bot.data", "bot.retry"]
 branch = true
 
 [tool.coverage.report]

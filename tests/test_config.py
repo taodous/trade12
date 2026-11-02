@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from bot.config import (
     ConfigError,
+    MovingAverageParams,
     RiskLimits,
     Settings,
     load_settings,
@@ -119,6 +120,20 @@ def test_risk_limits_requires_every_field() -> None:
     del limits["max_drawdown_pct"]
     with pytest.raises(ValidationError):
         RiskLimits.model_validate(limits)
+
+
+@pytest.mark.parametrize(
+    ("fast_window", "slow_window"),
+    [(0, 200), (50, 0), (-1, 200), (200, 200), (200, 50)],
+)
+def test_moving_average_params_rejects_invalid_windows(fast_window: int, slow_window: int) -> None:
+    with pytest.raises(ValidationError):
+        MovingAverageParams(fast_window=fast_window, slow_window=slow_window)
+
+
+def test_project_strategy_windows_are_valid() -> None:
+    params = load_strategy_config().strategy
+    assert params.fast_window < params.slow_window
 
 
 def test_load_strategy_config_missing_file(tmp_path: Path) -> None:

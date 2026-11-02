@@ -176,3 +176,4 @@ uv run python -m audit.report    # générer le rapport d'audit
 - Signaler tout doute sur un biais possible (look-ahead, surajustement, survivorship) plutôt que de l'ignorer
 - Être critique sur les résultats : un Sharpe supérieur à 2 en backtest est suspect par défaut et doit être questionné
 - Entre deux améliorations, privilégier celle qui réduit le risque plutôt que celle qui augmente le rendement
+- apres tout travail sur des fichier, ecrire dans le fichier MODIF.md une courte explication pour les modifs apportés fichier par fichier dans le format suivant : [nom du fichier] -> "explication de la modif et ses impacts". effacer l'ancien contenu de MODIF.md a chaque nouvlele ecriture.

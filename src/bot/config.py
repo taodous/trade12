@@ -1,7 +1,8 @@
 """Chargement et validation de la configuration du bot."""
 
+from datetime import date
 from pathlib import Path
-from typing import Self
+from typing import Annotated, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
@@ -49,12 +50,62 @@ class RiskLimits(BaseModel):
         return self
 
 
+class MovingAverageParams(BaseModel):
+    """Fenêtres de la stratégie de croisement de moyennes mobiles, en séances."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    fast_window: int = Field(gt=0)
+    slow_window: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _check_windows(self) -> Self:
+        if self.fast_window >= self.slow_window:
+            raise ValueError("fast_window doit être inférieur à slow_window")
+        return self
+
+
+class DataConfig(BaseModel):
+    """Paramètres des données historiques."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    symbols: list[Annotated[str, Field(pattern=r"^[A-Z][A-Z.]*$")]] = Field(min_length=1)
+    start_date: date
+    end_date: date | None
+    feed: Literal["sip", "iex"]
+    adjustment: Literal["raw", "split", "dividend", "all"]
+    min_bar_age_minutes: int = Field(ge=0)
+    directory: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_values(self) -> Self:
+        if len(set(self.symbols)) != len(self.symbols):
+            raise ValueError("symbols contient des doublons")
+        if self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("end_date ne peut pas précéder start_date")
+        return self
+
+
+class RetryConfig(BaseModel):
+    """Backoff exponentiel appliqué aux appels API limités en débit."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    max_attempts: int = Field(gt=0)
+    base_delay_seconds: float = Field(gt=0)
+    max_delay_seconds: float = Field(gt=0)
+
+
 class StrategyConfig(BaseModel):
     """Contenu validé de `config/strategy.yaml`."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     risk: RiskLimits
+    strategy: MovingAverageParams
+    data: DataConfig
+    api_retry: RetryConfig
 
 
 def load_settings(env_path: Path = DEFAULT_ENV_PATH) -> Settings:

@@ -18,3 +18,32 @@ risk:
   max_price_change_pct: 0.20
   allow_short: false
   allow_leverage: false
+
+strategy:
+  # Stratégie de référence, qui sert à valider la chaîne. Fenêtres conventionnelles, non optimisées.
+  # Toute modification est une nouvelle variante à inscrire au registre d'audit.
+  fast_window: 50
+  slow_window: 200
+
+data:
+  # Univers fixé a priori : ETF américains multi-actifs très liquides, tous cotés avant le début
+  # de l'historique. Toute modification est une nouvelle variante à inscrire au registre d'audit.
+  symbols: [SPY, QQQ, IWM, EFA, EEM, TLT, IEF, GLD, DBC, VNQ]
+  # Début de l'historique SIP disponible chez Alpaca.
+  start_date: 2016-01-04
+  # null : jusqu'à la dernière séance terminée.
+  end_date: null
+  # SIP couvre tout le marché, mais l'abonnement gratuit refuse ses données récentes.
+  feed: sip
+  # all : ajusté des splits et des dividendes, pour mesurer le rendement total.
+  adjustment: all
+  # Délai après la clôture avant de considérer une séance comme terminée.
+  min_bar_age_minutes: 15
+  # Relatif à la racine du projet.
+  directory: data/bars
+
+api_retry:
+  # Backoff exponentiel sur erreur 429.
+  max_attempts: 5
+  base_delay_seconds: 1.0
+  max_delay_seconds: 60.0
