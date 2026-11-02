@@ -1,2 +1,20 @@
 # Paramètres de stratégie et limites de risque.
-# À renseigner à l'étape 1 de la feuille de route, avec le schéma de validation dans src/bot/config.py.
+# Schéma de validation : src/bot/config.py. Les pourcentages sont des fractions (0.02 = 2 %).
+
+risk:
+  # Taille maximale d'une position, en fraction du capital.
+  max_position_pct: 0.20
+  # Exposition totale maximale, en fraction du capital. Au-delà de 1.0, allow_leverage est requis.
+  max_total_exposure_pct: 1.00
+  # Perte journalière au-delà de laquelle le kill switch ferme les positions et arrête le bot.
+  max_daily_loss_pct: 0.02
+  # Baisse depuis le plus haut du capital au-delà de laquelle le bot s'arrête.
+  max_drawdown_pct: 0.10
+  # Protection contre une boucle folle.
+  max_orders_per_day: 20
+  # Âge maximal des données avant refus de tout ordre.
+  max_data_age_seconds: 900
+  # Variation de prix considérée comme aberrante.
+  max_price_change_pct: 0.20
+  allow_short: false
+  allow_leverage: false
