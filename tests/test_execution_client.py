@@ -38,6 +38,7 @@ def make_account(**overrides: Any) -> TradeAccount:
         "status": AccountStatus.ACTIVE,
         "currency": "USD",
         "equity": "100000.50",
+        "last_equity": "100000.50",
         "cash": "100000.50",
         "buying_power": "200001",
         "trading_blocked": False,

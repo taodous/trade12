@@ -33,6 +33,7 @@ LIMITS = RiskLimits(
     max_drawdown_pct=0.1,
     max_orders_per_day=20,
     max_data_age_seconds=900,
+    max_clock_skew_seconds=5,
     max_price_change_pct=0.2,
     allow_short=False,
     allow_leverage=False,

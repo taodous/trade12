@@ -14,6 +14,8 @@ risk:
   max_orders_per_day: 20
   # Âge maximal du prix de référence d'un ordre. Le signal, lui, doit venir de la dernière séance.
   max_data_age_seconds: 900
+  # Avance tolérée d'un prix sur l'horloge d'Alpaca. Au-delà, le prix est refusé.
+  max_clock_skew_seconds: 5
   # Variation de prix considérée comme aberrante.
   max_price_change_pct: 0.20
   allow_short: false
@@ -69,6 +71,18 @@ targets:
   min_positive_months: 0.60
   suspicious_annual_return: 0.30
   suspicious_sharpe: 2.0
+
+live:
+  journal_file: data/journal.db
+  poll_interval_seconds: 60
+  # Pannes d'API consécutives avant arrêt du bot.
+  max_consecutive_errors: 5
+  # Jours calendaires à charger pour calculer le signal. Doit couvrir slow_window séances.
+  signal_lookback_days: 400
+  # Prix de référence des ordres. L'abonnement gratuit ne donne le temps réel que sur IEX.
+  price_feed: iex
+  # Attente maximale de l'annulation des ordres ouverts avant les fermetures du kill switch.
+  cancel_wait_seconds: 10
 
 api_retry:
   # Backoff exponentiel sur erreur 429.

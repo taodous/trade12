@@ -41,6 +41,22 @@ class RiskStateStore(Protocol):
         ...
 
 
+class InMemoryRiskStateStore:
+    """Garde l'état en mémoire : une simulation ne doit pas modifier l'état réel du risque."""
+
+    def __init__(self, state: RiskState) -> None:
+        """Part de l'état fourni."""
+        self._state = state
+
+    def load(self) -> RiskState:
+        """Retourne l'état courant."""
+        return self._state
+
+    def save(self, state: RiskState) -> None:
+        """Remplace l'état courant."""
+        self._state = state
+
+
 class JsonRiskStateStore:
     """Conserve l'état du risque dans un fichier JSON, écrit de façon atomique."""
 

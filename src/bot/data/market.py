@@ -12,17 +12,21 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import structlog
 from alpaca.common.types import RawData
 from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.models import BarSet
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.models import BarSet, Snapshot
+from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.models import Calendar
 from alpaca.trading.requests import GetCalendarRequest
 
-from bot.config import DataConfig, RetryConfig, Settings
+from bot.config import DataConfig, RetryConfig, Settings, StrategyConfig
+from bot.data.quality import clean_bars
 from bot.retry import with_backoff
+
+logger = structlog.get_logger()
 
 EXCHANGE_TIMEZONE = "America/New_York"
 BAR_COLUMNS = ["open", "high", "low", "close", "volume", "trade_count", "vwap"]
@@ -46,6 +50,28 @@ class CalendarClient(Protocol):
     def get_calendar(self, filters: GetCalendarRequest | None = None) -> list[Calendar] | RawData:
         """Retourne les séances demandées."""
         ...
+
+
+class SnapshotClient(Protocol):
+    """Partie de l'API de données nécessaire à la lecture des derniers prix."""
+
+    def get_stock_snapshot(
+        self, request_params: StockSnapshotRequest
+    ) -> dict[str, Snapshot] | RawData:
+        """Retourne les instantanés demandés."""
+        ...
+
+
+class LiveDataClient(BarsClient, SnapshotClient, Protocol):
+    """Partie de l'API de données utilisée par le bot."""
+
+
+@dataclass(frozen=True)
+class LatestPrice:
+    """Dernière transaction connue d'un symbole."""
+
+    price: float
+    as_of: datetime
 
 
 @dataclass(frozen=True)
@@ -123,3 +149,82 @@ def fetch_bars(
     bars.index = timestamps.tz_convert(EXCHANGE_TIMEZONE).normalize().tz_localize(None)
     bars.index.name = "session"
     return bars.sort_index()
+
+
+def fetch_latest_prices(
+    client: SnapshotClient, symbols: Sequence[str], feed: str, retry: RetryConfig
+) -> dict[str, LatestPrice]:
+    """Retourne la dernière transaction de chaque symbole. Un symbole sans donnée est absent."""
+    request = StockSnapshotRequest(symbol_or_symbols=list(symbols), feed=DataFeed(feed))
+    snapshots = with_backoff(lambda: client.get_stock_snapshot(request), retry)
+    prices = {}
+    for symbol, snapshot in snapshots.items():
+        if not isinstance(snapshot, Snapshot):
+            raise DataFetchError("Réponse brute reçue au lieu des derniers prix")
+        if snapshot.latest_trade is not None:
+            trade = snapshot.latest_trade
+            prices[symbol] = LatestPrice(trade.price, trade.timestamp)
+    return prices
+
+
+class AlpacaMarketData:
+    """Données de marché du bot en paper trading."""
+
+    def __init__(
+        self,
+        data_client: LiveDataClient,
+        calendar_client: CalendarClient,
+        config: StrategyConfig,
+        retry: RetryConfig,
+    ) -> None:
+        """Associe la source aux clients Alpaca."""
+        self._data_client = data_client
+        self._calendar_client = calendar_client
+        self._config = config
+        self._retry = retry
+
+    def sessions(self, start: date, end: date) -> list[Session]:
+        """Retourne les séances de la période."""
+        return fetch_sessions(self._calendar_client, start, end, self._retry)
+
+    def closes(self, sessions: Sequence[Session]) -> pd.DataFrame:
+        """Retourne les clôtures contrôlées, une colonne par symbole.
+
+        Une séance manquante ou une barre retirée reste vide, et un symbole sans donnée donne une
+        colonne vide : aucune valeur n'est reportée, le symbole est simplement exclu du cycle.
+        """
+        expected = [session.date for session in sessions]
+        index = pd.DatetimeIndex(pd.to_datetime(expected), name="session")
+        closes = pd.DataFrame(index=index, columns=self._config.data.symbols, dtype=float)
+        for symbol in self._config.data.symbols:
+            try:
+                bars = fetch_bars(
+                    self._data_client,
+                    symbol,
+                    expected[0],
+                    sessions[-1].close,
+                    self._config.data,
+                    self._retry,
+                )
+            except DataFetchError as exc:
+                logger.error("bars_unavailable", symbol=symbol, reason=str(exc))
+                continue
+            cleaned = clean_bars(bars, expected, self._config.risk.max_price_change_pct)
+            for issue in cleaned.issues:
+                logger.warning(
+                    "data_issue",
+                    symbol=symbol,
+                    session=issue.session.isoformat(),
+                    kind=issue.kind.value,
+                )
+            closes[symbol] = cleaned.bars["close"].reindex(index)
+        return closes
+
+    def latest_prices(self) -> dict[str, LatestPrice]:
+        """Retourne le dernier prix connu de chaque symbole."""
+        return fetch_latest_prices(
+            self._data_client,
+            self._config.data.symbols,
+            self._config.live.price_feed,
+            self._retry,
+        )

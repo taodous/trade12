@@ -32,6 +32,7 @@ def make_limits(**overrides: Any) -> RiskLimits:
         "max_drawdown_pct": 0.1,
         "max_orders_per_day": 3,
         "max_data_age_seconds": 900,
+        "max_clock_skew_seconds": 5,
         "max_price_change_pct": 0.2,
         "allow_short": False,
         "allow_leverage": False,
@@ -116,8 +117,12 @@ def test_data_age_limit(age: float, reason: RejectReason | None) -> None:
     assert check(buy(), market=make_market(age_seconds=age)) is reason
 
 
+def test_price_slightly_ahead_of_clock_is_tolerated() -> None:
+    assert check(buy(), market=make_market(age_seconds=-5.0)) is None
+
+
 def test_price_from_the_future_is_rejected() -> None:
-    assert check(buy(), market=make_market(age_seconds=-1.0)) is RejectReason.STALE_DATA
+    assert check(buy(), market=make_market(age_seconds=-5.1)) is RejectReason.STALE_DATA
 
 
 @pytest.mark.parametrize(

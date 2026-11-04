@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -7,8 +8,8 @@ import pytest
 from alpaca.common.exceptions import APIError
 from alpaca.common.types import RawData
 from alpaca.data.enums import Adjustment, DataFeed
-from alpaca.data.models import BarSet
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.models import BarSet, Snapshot
+from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.trading.models import Calendar
 from alpaca.trading.requests import GetCalendarRequest
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -17,9 +18,11 @@ from bot.config import DataConfig, RetryConfig, Settings, StrategyConfig, load_s
 from bot.data import download
 from bot.data.market import (
     BAR_COLUMNS,
+    AlpacaMarketData,
     DataFetchError,
     Session,
     fetch_bars,
+    fetch_latest_prices,
     fetch_sessions,
     last_completed_session,
 )
@@ -279,3 +282,125 @@ def test_main_reports_remote_errors(
 
     assert download.main([]) == 1
     assert reason in capsys.readouterr().out
+
+
+TRADE_TIME = "2024-03-11T14:00:00Z"
+
+
+def make_snapshot(symbol: str, trade: dict[str, object] | None) -> Snapshot:
+    bar = raw_bar(TRADE_TIME)
+    quote = {
+        "t": TRADE_TIME,
+        "ax": "V",
+        "ap": 100.0,
+        "as": 1,
+        "bx": "V",
+        "bp": 99.0,
+        "bs": 1,
+        "c": [],
+        "z": "A",
+    }
+    raw: Any = {
+        "latestTrade": trade,
+        "latestQuote": quote,
+        "minuteBar": bar,
+        "dailyBar": bar,
+        "prevDailyBar": bar,
+    }
+    return Snapshot(symbol, raw)
+
+
+TRADE = {"t": TRADE_TIME, "x": "V", "p": 101.5, "s": 10, "c": [], "i": 1, "z": "A"}
+
+
+class FakeLiveClient(FakeBarsClient):
+    def __init__(
+        self,
+        snapshots: dict[str, Snapshot] | RawData | None = None,
+        empty_symbols: tuple[str, ...] = (),
+        available: list[date] | None = None,
+    ) -> None:
+        super().__init__()
+        self.available = SESSIONS if available is None else available
+        self.snapshots = snapshots or {}
+        self.empty_symbols = empty_symbols
+        self.snapshot_requests: list[StockSnapshotRequest] = []
+
+    def get_stock_bars(self, request_params: StockBarsRequest) -> BarSet | RawData:
+        self.requests.append(request_params)
+        symbol = str(request_params.symbol_or_symbols)
+        if symbol in self.empty_symbols:
+            return BarSet({symbol: []})
+        return make_barset(symbol, self.available)
+
+    def get_stock_snapshot(
+        self, request_params: StockSnapshotRequest
+    ) -> dict[str, Snapshot] | RawData:
+        self.snapshot_requests.append(request_params)
+        return self.snapshots
+
+
+def session_list() -> list[Session]:
+    return [Session(day, close_of(day)) for day in SESSIONS]
+
+
+def test_fetch_latest_prices_reads_last_trade() -> None:
+    client = FakeLiveClient({"SPY": make_snapshot("SPY", TRADE)})
+    prices = fetch_latest_prices(client, ["SPY"], "iex", RETRY)
+    assert prices["SPY"].price == 101.5
+    assert prices["SPY"].as_of == datetime(2024, 3, 11, 14, tzinfo=UTC)
+    assert client.snapshot_requests[0].feed is DataFeed.IEX
+
+
+def test_fetch_latest_prices_omits_symbol_without_trade() -> None:
+    client = FakeLiveClient({"SPY": make_snapshot("SPY", None)})
+    assert fetch_latest_prices(client, ["SPY"], "iex", RETRY) == {}
+
+
+def test_fetch_latest_prices_rejects_raw_response() -> None:
+    client = FakeLiveClient({"SPY": {"raw": 1}})
+    with pytest.raises(DataFetchError, match="brute"):
+        fetch_latest_prices(client, ["SPY"], "iex", RETRY)
+
+
+def live_config(symbols: list[str]) -> StrategyConfig:
+    config = make_config()
+    return config.model_copy(update={"data": DATA.model_copy(update={"symbols": symbols})})
+
+
+def test_market_data_closes_keeps_every_symbol_on_expected_sessions() -> None:
+    client = FakeLiveClient()
+    market = AlpacaMarketData(client, FakeCalendarClient(), live_config(["SPY", "TLT"]), RETRY)
+
+    closes = market.closes(session_list())
+
+    assert list(closes.columns) == ["SPY", "TLT"]
+    assert list(closes.index) == [pd.Timestamp(day) for day in SESSIONS]
+    assert closes.notna().all().all()
+    assert client.requests[0].end == close_of(SESSIONS[1]).astimezone(UTC).replace(tzinfo=None)
+
+
+def test_market_data_closes_leaves_gap_for_missing_session() -> None:
+    client = FakeLiveClient(available=SESSIONS[:1])
+    market = AlpacaMarketData(client, FakeCalendarClient(), live_config(["SPY"]), RETRY)
+
+    closes = market.closes(session_list())
+
+    assert closes["SPY"].notna().tolist() == [True, False]
+
+
+def test_market_data_closes_survives_symbol_without_data() -> None:
+    client = FakeLiveClient(empty_symbols=("TLT",))
+    market = AlpacaMarketData(client, FakeCalendarClient(), live_config(["SPY", "TLT"]), RETRY)
+
+    closes = market.closes(session_list())
+
+    assert closes["SPY"].notna().all()
+    assert closes["TLT"].isna().all()
+
+
+def test_market_data_sessions_and_latest_prices() -> None:
+    client = FakeLiveClient({"SPY": make_snapshot("SPY", TRADE)})
+    market = AlpacaMarketData(client, FakeCalendarClient(), live_config(["SPY"]), RETRY)
+    assert [item.date for item in market.sessions(SESSIONS[0], SESSIONS[1])] == SESSIONS
+    assert market.latest_prices()["SPY"].price == 101.5

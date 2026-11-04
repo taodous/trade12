@@ -1,23 +1,39 @@
-[config/strategy.yaml] -> "Ajout des sections backtest et targets. La fin de l'in-sample est fixée au 2022-12-31 avant tout résultat : les séances suivantes sont réservées à la validation finale. Coûts retenus : 0,01 % de frais et 0,1 % de slippage par ordre."
+[src/bot/main.py] -> "Nouveau. Boucle principale : kill switch, suivi des ordres, signaux, risque, journal puis envoi, une fois par séance. Options --once, --dry-run et --reset-kill-switch. Un lancement sans option envoie de vrais ordres sur le compte paper et doit rester actif pour suivre le kill switch."
 
-[src/bot/config.py] -> "Ajout de BacktestConfig et PerformanceTargets, validés au chargement. Le bot refuse de démarrer si ces sections manquent, si le benchmark est hors univers ou si la coupure précède le début des données."
+[src/bot/execution/broker.py] -> "Nouveau. Seul point de contact avec l'API d'ordres. Un identifiant stable par ordre et par séance empêche les doublons, y compris après un redémarrage ou une réponse perdue. Un refus du broker est journalisé au lieu d'arrêter le cycle."
 
-[src/bot/data/store.py] -> "Ajout de load_column pour charger n'importe quelle colonne, dont les ouvertures nécessaires au backtest. load_closes garde le même comportement."
+[src/bot/execution/planner.py] -> "Nouveau. Traduit les signaux en ordres, les ventes en premier, à 10 % du capital en parts entières. Une donnée manquante ne produit jamais d'ordre : une position n'est donc pas vendue à cause d'un trou de données."
 
-[audit/backtest.py] -> "Nouveau. Backtest net de coûts avec exécution à l'ouverture de t+1, à 10 % du capital par ETF, comparé à SPY sur la même période. Ne peut pas lire l'out-of-sample : les données sont coupées avant tout calcul. N'applique ni le kill switch ni les contrôles de bot.risk. Sans rééquilibrage, un achat peut être réduit ou ignoré quand le cash manque."
+[src/bot/execution/client.py] -> "Ajout de last_equity dans l'état du compte, nécessaire au contrôle de la perte journalière."
 
-[audit/metrics.py] -> "Nouveau. Calcule les métriques sur 252 séances par an et un taux sans risque de 0, compare aux objectifs critère par critère, signale les résultats suspects et repère les séances où le kill switch se serait déclenché."
+[src/bot/journal/store.py] -> "Nouveau. Journal SQLite de chaque décision : signal, données d'entrée, décision du risque, ordre, prix d'exécution et slippage observé. La décision est écrite avant l'envoi : si l'écriture échoue, l'ordre ne part pas."
 
-[audit/registry.py] -> "Nouveau. Inscrit chaque nouvelle variante testée et son premier résultat, pour tenir compte du biais de tests multiples. Relancer une variante identique ne l'ajoute pas."
+[src/bot/data/market.py] -> "Ajout des derniers prix IEX et de AlpacaMarketData, qui recharge les clôtures SIP à chaque cycle. Une clôture manquante reste vide et aucune valeur n'est reportée."
 
-[audit/variants.jsonl] -> "Nouveau, à commiter. Registre des variantes, qui contient pour l'instant la stratégie de référence 50/200."
+[src/bot/risk/checks.py] -> "Un prix peut maintenant être en avance sur l'horloge dans la limite de max_clock_skew_seconds. Sans cette tolérance, l'écart d'horloge pouvait faire refuser des prix valides."
 
-[pyproject.toml] -> "Ajout du module audit dans la mesure de couverture. Le seuil de 80 % s'y applique maintenant aussi."
+[src/bot/risk/state.py] -> "Ajout d'un stockage en mémoire, pour qu'un --dry-run ne modifie jamais l'état réel du risque."
 
-[tests/test_audit_backtest.py] -> "Nouveau. Vérifie l'exécution à t+1 et les coûts sur des exemples calculés à la main, et que modifier les prix de l'out-of-sample ne change rien au rapport."
+[src/bot/config.py] -> "Ajout de LiveConfig et max_clock_skew_seconds. Ces réglages deviennent obligatoires dans strategy.yaml : le bot refuse de démarrer s'ils manquent."
 
-[tests/test_audit_metrics.py] -> "Nouveau. Vérifie les métriques à la main, les seuils exacts de chaque critère et la relecture du kill switch."
+[config/strategy.yaml] -> "Ajout de la section live (journal, fréquence, pannes tolérées, historique du signal, flux de prix) et de max_clock_skew_seconds à 5 secondes."
 
-[tests/test_config.py] -> "Ajout des tests sur le benchmark et la date de coupure."
+[tests/test_main.py] -> "Nouveau. Vérifie la boucle complète avec un faux broker : doublons, redémarrage, ordre refusé, panne réseau, kill switch, trous de données et simulation."
 
-[MODIF.md] -> "Réécrit pour l'étape 5. Le récapitulatif de l'étape 4 est effacé, comme le prévoit la règle."
+[tests/test_execution_units.py] -> "Nouveau. Vérifie le planificateur, le broker et le journal séparément."
+
+[tests/test_data_market.py] -> "Ajout des tests sur les derniers prix et les clôtures du bot."
+
+[tests/test_execution_client.py] -> "Ajout de last_equity au compte de test."
+
+[tests/test_risk_checks.py] -> "Ajout du test de tolérance d'horloge et de ses limites."
+
+[tests/test_risk_manager.py] -> "Ajout de max_clock_skew_seconds aux limites de test."
+
+[tests/test_config.py] -> "Ajout de max_clock_skew_seconds aux limites de test."
+
+[tests/test_audit_metrics.py] -> "Ajout de max_clock_skew_seconds aux limites de test."
+
+[tests/__init__.py] -> "Nouveau, vide. Fait de tests un paquet pour partager les faux objets entre fichiers de test."
+
+[MODIF.md] -> "Réécrit pour l'étape 6. Le récapitulatif de l'étape 5 est effacé, comme le prévoit la règle."

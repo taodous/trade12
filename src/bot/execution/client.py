@@ -37,6 +37,7 @@ class AccountSnapshot(BaseModel):
     status: AccountStatus
     currency: str
     equity: Decimal
+    last_equity: Decimal
     cash: Decimal
     buying_power: Decimal
     trading_blocked: bool

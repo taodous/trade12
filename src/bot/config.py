@@ -37,6 +37,7 @@ class RiskLimits(BaseModel):
     max_drawdown_pct: float = Field(gt=0, le=1)
     max_orders_per_day: int = Field(gt=0)
     max_data_age_seconds: int = Field(gt=0)
+    max_clock_skew_seconds: int = Field(ge=0)
     max_price_change_pct: float = Field(gt=0)
     allow_short: bool
     allow_leverage: bool
@@ -126,6 +127,19 @@ class PerformanceTargets(BaseModel):
     suspicious_sharpe: float
 
 
+class LiveConfig(BaseModel):
+    """Paramètres de la boucle de paper trading."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    journal_file: str = Field(min_length=1)
+    poll_interval_seconds: int = Field(gt=0)
+    max_consecutive_errors: int = Field(gt=0)
+    signal_lookback_days: int = Field(gt=0)
+    price_feed: Literal["sip", "iex"]
+    cancel_wait_seconds: int = Field(ge=0)
+
+
 class StrategyConfig(BaseModel):
     """Contenu validé de `config/strategy.yaml`."""
 
@@ -137,6 +151,7 @@ class StrategyConfig(BaseModel):
     data: DataConfig
     backtest: BacktestConfig
     targets: PerformanceTargets
+    live: LiveConfig
     api_retry: RetryConfig
 
     @model_validator(mode="after")

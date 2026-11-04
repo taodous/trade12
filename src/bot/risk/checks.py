@@ -89,7 +89,7 @@ def _check_market_data(
             return _reject(RejectReason.MISSING_DATA, f"prix invalide : {price}")
 
     age = (context.now - snapshot.as_of).total_seconds()
-    if age < 0:
+    if age < -limits.max_clock_skew_seconds:
         return _reject(RejectReason.STALE_DATA, "prix daté du futur")
     if age > limits.max_data_age_seconds:
         return _reject(RejectReason.STALE_DATA, f"prix âgé de {age:.0f} s")
