@@ -6,8 +6,10 @@ le Sharpe est donc flatteur, à stratégie comme à benchmark égaux, et le cash
 plus dans le backtest.
 """
 
+import math
 from datetime import date
 from enum import StrEnum
+from statistics import NormalDist
 from typing import Any
 
 import numpy as np
@@ -21,7 +23,7 @@ from bot.config import PerformanceTargets, RiskLimits
 class PerformanceMetrics(BaseModel):
     """Performance ajustée du risque sur une série de rendements."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, ser_json_inf_nan="strings")
 
     annual_return: float
     annual_volatility: float
@@ -37,7 +39,7 @@ class PerformanceMetrics(BaseModel):
 class TradeStatistics(BaseModel):
     """Statistiques des trades clôturés. `profit_factor` est vide sans trade perdant."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, ser_json_inf_nan="strings")
 
     closed_trades: int
     win_rate: float
@@ -48,7 +50,7 @@ class TradeStatistics(BaseModel):
 class KillSwitchReplay(BaseModel):
     """Déclenchements qu'aurait eus le kill switch, le backtest ne l'appliquant pas."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, ser_json_inf_nan="strings")
 
     first_daily_loss: date | None
     first_drawdown: date | None
@@ -62,12 +64,13 @@ class Status(StrEnum):
     PASS = "pass"
     ALERT = "alert"
     FAIL = "fail"
+    INSUFFICIENT = "insufficient"
 
 
 class Criterion(BaseModel):
     """Critère de performance évalué."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, ser_json_inf_nan="strings")
 
     name: str
     value: float
@@ -195,3 +198,64 @@ def suspicious_results(metrics: PerformanceMetrics, targets: PerformanceTargets)
     if metrics.sharpe > targets.suspicious_sharpe:
         flags.append("sharpe")
     return flags
+
+
+TRADING_DAYS = 252
+_EULER_GAMMA = 0.5772156649015329
+
+
+class DeflatedSharpe(BaseModel):
+    """Sharpe dégonflé : probabilité que le vrai Sharpe dépasse le meilleur Sharpe dû au hasard.
+
+    `expected_max_sharpe` est le Sharpe annualisé que le meilleur de `trials` essais sans aucun
+    pouvoir prédictif atteindrait en moyenne, compte tenu de la dispersion des essais.
+    """
+
+    model_config = ConfigDict(frozen=True, ser_json_inf_nan="strings")
+
+    sharpe: float
+    trials: int
+    expected_max_sharpe: float
+    probability: float
+
+
+def deflated_sharpe(returns: pd.Series, trial_sharpes: list[float]) -> DeflatedSharpe:
+    """Retourne le Sharpe dégonflé de Bailey et López de Prado (2014).
+
+    `trial_sharpes` contient le Sharpe annualisé de chaque variante testée, celle-ci comprise. Avec
+    un seul essai, le seuil est 0 et le résultat est le Sharpe probabiliste. L'asymétrie et
+    l'épaisseur des queues des rendements réduisent la confiance accordée au Sharpe observé.
+    """
+    if returns.empty or returns.isna().any() or len(returns) < 2:
+        raise ValueError("Les rendements doivent être complets et compter au moins deux séances")
+    if not trial_sharpes or not all(math.isfinite(value) for value in trial_sharpes):
+        raise ValueError("Les Sharpe des essais doivent être renseignés et finis")
+
+    normal = NormalDist()
+    scale = math.sqrt(TRADING_DAYS)
+    std = float(returns.std())
+    sharpe = float(returns.mean()) / std if std > 0 else float("nan")
+    trials = len(trial_sharpes)
+    if trials > 1:
+        dispersion = float(np.std(np.asarray(trial_sharpes) / scale, ddof=1))
+        expected_max = dispersion * (
+            (1 - _EULER_GAMMA) * normal.inv_cdf(1 - 1 / trials)
+            + _EULER_GAMMA * normal.inv_cdf(1 - 1 / (trials * math.e))
+        )
+    else:
+        expected_max = 0.0
+
+    skew = _scalar(returns.skew())
+    kurtosis = _scalar(returns.kurt()) + 3
+    variance = 1 - skew * sharpe + (kurtosis - 1) / 4 * sharpe**2
+    if not (math.isfinite(sharpe) and math.isfinite(variance) and variance > 0):
+        probability = float("nan")
+    else:
+        z = (sharpe - expected_max) * math.sqrt(len(returns) - 1) / math.sqrt(variance)
+        probability = normal.cdf(z)
+    return DeflatedSharpe(
+        sharpe=sharpe * scale,
+        trials=trials,
+        expected_max_sharpe=expected_max * scale,
+        probability=probability,
+    )

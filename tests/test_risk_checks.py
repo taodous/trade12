@@ -90,10 +90,12 @@ def test_valid_order_is_approved() -> None:
 
 
 @pytest.mark.parametrize("quantity", [0.0, -1.0, NAN, INF])
+@pytest.mark.risk_limit("invalid_order")
 def test_invalid_quantity_is_rejected(quantity: float) -> None:
     assert check(buy(quantity)) is RejectReason.INVALID_ORDER
 
 
+@pytest.mark.risk_limit("missing_data")
 def test_missing_snapshot_is_rejected() -> None:
     assert check(buy(), market={}) is RejectReason.MISSING_DATA
 
@@ -102,17 +104,20 @@ def test_missing_snapshot_is_rejected() -> None:
     ("price", "previous_close"),
     [(NAN, 100.0), (100.0, NAN), (INF, 100.0), (0.0, 100.0), (100.0, 0.0), (-1.0, 100.0)],
 )
+@pytest.mark.risk_limit("missing_data")
 def test_invalid_prices_are_rejected(price: float, previous_close: float) -> None:
     market = make_market(price, previous_close)
     assert check(buy(), market=market) is RejectReason.MISSING_DATA
 
 
+@pytest.mark.risk_limit("missing_data")
 def test_timestamp_without_timezone_is_rejected() -> None:
     market = {"SPY": PriceSnapshot(100.0, 100.0, NOW.replace(tzinfo=None))}
     assert check(buy(), market=market) is RejectReason.MISSING_DATA
 
 
 @pytest.mark.parametrize(("age", "reason"), [(900.0, None), (901.0, RejectReason.STALE_DATA)])
+@pytest.mark.risk_limit("stale_data")
 def test_data_age_limit(age: float, reason: RejectReason | None) -> None:
     assert check(buy(), market=make_market(age_seconds=age)) is reason
 
@@ -121,6 +126,7 @@ def test_price_slightly_ahead_of_clock_is_tolerated() -> None:
     assert check(buy(), market=make_market(age_seconds=-5.0)) is None
 
 
+@pytest.mark.risk_limit("stale_data")
 def test_price_from_the_future_is_rejected() -> None:
     assert check(buy(), market=make_market(age_seconds=-5.1)) is RejectReason.STALE_DATA
 
@@ -134,6 +140,8 @@ def test_price_from_the_future_is_rejected() -> None:
         (79.0, RejectReason.ABERRANT_PRICE),
     ],
 )
+@pytest.mark.scenario("opening_gap")
+@pytest.mark.risk_limit("aberrant_price")
 def test_aberrant_price_limit(price: float, reason: RejectReason | None) -> None:
     order = buy(1.0)
     assert check(order, market=make_market(price=price)) is reason
@@ -150,6 +158,7 @@ def test_data_checks_also_apply_to_sells() -> None:
     [date(2026, 10, 30), date(2026, 11, 3), date(2026, 11, 4)],
     ids=["old", "same_day_look_ahead", "future"],
 )
+@pytest.mark.risk_limit("stale_signal")
 def test_signal_must_come_from_last_completed_session(signal_session: date) -> None:
     order = replace(buy(), signal_session=signal_session)
     assert check(order) is RejectReason.STALE_SIGNAL
@@ -159,6 +168,7 @@ def test_signal_must_come_from_last_completed_session(signal_session: date) -> N
     ("quantity", "reason"),
     [(200.0, None), (200.01, RejectReason.POSITION_LIMIT)],
 )
+@pytest.mark.risk_limit("position_limit")
 def test_position_limit_is_a_fraction_of_equity(
     quantity: float, reason: RejectReason | None
 ) -> None:
@@ -189,6 +199,7 @@ def invested_portfolio(invested: float) -> PortfolioState:
     ("quantity", "reason"),
     [(100.0, None), (101.0, RejectReason.EXPOSURE_LIMIT)],
 )
+@pytest.mark.risk_limit("exposure_limit")
 def test_exposure_limit_counts_all_positions(quantity: float, reason: RejectReason | None) -> None:
     assert check(buy(quantity), invested_portfolio(90_000.0)) is reason
 
@@ -217,6 +228,7 @@ def test_leverage_requires_explicit_activation() -> None:
     assert check(buy(501.0), portfolio, limits=limits) is RejectReason.EXPOSURE_LIMIT
 
 
+@pytest.mark.risk_limit("short_not_allowed")
 def test_sell_without_position_is_short_and_rejected() -> None:
     assert check(sell()) is RejectReason.SHORT_NOT_ALLOWED
 
@@ -296,6 +308,7 @@ def test_valid_portfolio_is_accepted() -> None:
         (90_000.0, HaltReason.DAILY_LOSS),
     ],
 )
+@pytest.mark.risk_limit("daily_loss")
 def test_daily_loss_limit(equity: float, reason: HaltReason | None) -> None:
     portfolio = make_portfolio(equity=equity)
     assert halt_reason(portfolio, 100_000.0, LIMITS) is reason
@@ -305,6 +318,7 @@ def test_daily_loss_limit(equity: float, reason: HaltReason | None) -> None:
     ("equity", "reason"),
     [(90_001.0, None), (90_000.0, HaltReason.MAX_DRAWDOWN), (80_000.0, HaltReason.MAX_DRAWDOWN)],
 )
+@pytest.mark.risk_limit("max_drawdown")
 def test_drawdown_limit_is_measured_from_peak(equity: float, reason: HaltReason | None) -> None:
     portfolio = make_portfolio(equity=equity, day_start_equity=equity)
     assert halt_reason(portfolio, 100_000.0, LIMITS) is reason

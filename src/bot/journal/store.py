@@ -185,6 +185,14 @@ class Journal:
         ).fetchone()
         return row is not None
 
+    def has_completed_cycle_in_month(self, session: date) -> bool:
+        """Indique si une séance antérieure du même mois a déjà été traitée."""
+        row = self._connection.execute(
+            "SELECT 1 FROM cycles WHERE session >= ? AND session < ?",
+            (session.replace(day=1).isoformat(), session.isoformat()),
+        ).fetchone()
+        return row is not None
+
     def complete_cycle(self, session: date, completed_at: datetime) -> None:
         """Marque les décisions de cette séance comme prises."""
         with self._connection:

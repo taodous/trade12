@@ -51,8 +51,8 @@ from bot.risk.models import (
     RiskContext,
 )
 from bot.risk.state import InMemoryRiskStateStore, JsonRiskStateStore, RiskStateError
-from bot.strategy.base import Strategy
-from bot.strategy.moving_average import MovingAverageCrossover
+from bot.strategy.base import WeightStrategy
+from bot.strategy.factory import build_strategy, rebalance_policy
 
 logger = structlog.get_logger()
 
@@ -88,7 +88,7 @@ class TradingBot:
     def __init__(
         self,
         config: StrategyConfig,
-        strategy: Strategy,
+        strategy: WeightStrategy,
         broker: Broker,
         market: MarketData,
         risk: RiskManager,
@@ -106,9 +106,11 @@ class TradingBot:
         self._journal = journal
         self._dry_run = dry_run
         self._sleep = sleep
-        self._weight = 1 / len(config.data.symbols)
-        if self._weight > config.risk.max_position_pct:
-            raise ValueError(f"Poids de {self._weight:.4f} supérieur à la limite par position")
+        self._rebalance = rebalance_policy(config.strategy)
+        if strategy.max_weight > config.risk.max_position_pct:
+            raise ValueError(
+                f"Poids de {strategy.max_weight:.4f} supérieur à la limite par position"
+            )
 
     def tick(self, now: datetime) -> None:
         """Exécute une itération : kill switch, suivi des ordres puis décisions de la séance."""
@@ -124,6 +126,15 @@ class TradingBot:
             return
         if not clock.is_open and not self._dry_run:
             logger.info("market_closed")
+            return
+        # Comme le backtest, une stratégie rééquilibrée ne décide qu'une fois par mois : à la
+        # première séance du mois où le bot tourne.
+        if (
+            self._rebalance is not None
+            and not self._dry_run
+            and self._journal.has_completed_cycle_in_month(session)
+        ):
+            logger.info("not_a_rebalance_session")
             return
         self._trade(now, session)
 
@@ -156,26 +167,28 @@ class TradingBot:
 
     def _load_signals(
         self, now: datetime, session: date
-    ) -> tuple[Session, pd.DataFrame, dict[str, int | None]]:
+    ) -> tuple[Session, pd.DataFrame, dict[str, float | None]]:
         lookback = timedelta(days=self._config.live.signal_lookback_days)
         calendar = self._market.sessions(session - lookback, session)
         min_age = timedelta(minutes=self._config.data.min_bar_age_minutes)
         last = last_completed_session(calendar, now, min_age)
         sessions = [item for item in calendar if item.date <= last.date]
-        slow_window = self._config.strategy.slow_window
-        if len(sessions) < slow_window:
+        warm_up = self._strategy.warm_up
+        if len(sessions) < warm_up:
             raise DataFetchError(
-                f"{len(sessions)} séances disponibles pour une fenêtre de {slow_window}"
+                f"{len(sessions)} séances disponibles pour un préchauffage de {warm_up}"
             )
 
         closes = self._market.closes(sessions)
         # Une clôture manquante rendrait le signal hors marché et déclencherait une vente à tort.
-        complete = closes.columns[closes.tail(slow_window).notna().all()]
-        signals: dict[str, int | None] = dict.fromkeys(closes.columns)
-        if len(complete):
-            generated = self._strategy.generate(closes[complete]).iloc[-1]
-            signals.update({str(symbol): int(generated[symbol]) for symbol in complete})
-        return last, closes, signals
+        complete = closes.columns[closes.tail(warm_up).notna().all()]
+        targets: dict[str, float | None] = dict.fromkeys(closes.columns)
+        # Sans un symbole indispensable, comme celui du filtre de régime, aucun poids n'est fiable.
+        required = self._strategy.required_symbols
+        if len(complete) and required <= {str(symbol) for symbol in complete}:
+            generated = self._strategy.target_weights(closes[complete]).iloc[-1]
+            targets.update({str(symbol): float(generated[symbol]) for symbol in complete})
+        return last, closes, targets
 
     def _trade(self, now: datetime, session: date) -> None:
         account = self._broker.account()
@@ -183,7 +196,7 @@ class TradingBot:
             logger.error("account_cannot_trade", status=account.status.value)
             return
 
-        last, closes, signals = self._load_signals(now, session)
+        last, closes, targets = self._load_signals(now, session)
         latest = self._market.latest_prices()
         # Lu après les prix : une transaction reçue pendant le cycle ne doit pas paraître future.
         decided_at = self._broker.clock().timestamp
@@ -194,11 +207,12 @@ class TradingBot:
         }
         prices = {symbol: snapshot.price for symbol, snapshot in snapshots.items()}
         portfolio, open_symbols = self._broker.portfolio(account, prices)
-        items = plan_orders(signals, portfolio, open_symbols, prices, self._weight, last.date)
+        items = plan_orders(targets, portfolio, open_symbols, prices, last.date, self._rebalance)
         context = RiskContext(decided_at, session, last.date)
 
         for item in items:
             inputs = self._inputs(item.symbol, last.date, closes, snapshots, portfolio)
+            inputs["target_weight"] = item.target
             portfolio = self._process(item, inputs, portfolio, snapshots, context)
 
         if self._risk.is_halted:
@@ -425,7 +439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         bot = TradingBot(
             config,
-            MovingAverageCrossover(config.strategy),
+            build_strategy(config.strategy, config.data.symbols),
             broker,
             market,
             risk,

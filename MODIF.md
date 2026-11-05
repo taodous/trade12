@@ -1,39 +1,7 @@
-[src/bot/main.py] -> "Nouveau. Boucle principale : kill switch, suivi des ordres, signaux, risque, journal puis envoi, une fois par séance. Options --once, --dry-run et --reset-kill-switch. Un lancement sans option envoie de vrais ordres sur le compte paper et doit rester actif pour suivre le kill switch."
+[config/strategy.yaml] -> "Cibles de performance révisées le 2026-11-05 : rendement 5 % (au lieu de 8 %), Sharpe 0,6 (au lieu de 1), Calmar 0,5 (au lieu de 1). Seuils de drawdown, de robustesse et de résultats suspects inchangés. Chaque valeur est commentée avec sa dérivation et les anciennes valeurs sont conservées. Impact : le verdict de l'audit est recalculé avec ces cibles, la stratégie n'est pas modifiée et le registre ne bouge pas."
 
-[src/bot/execution/broker.py] -> "Nouveau. Seul point de contact avec l'API d'ordres. Un identifiant stable par ordre et par séance empêche les doublons, y compris après un redémarrage ou une réponse perdue. Un refus du broker est journalisé au lieu d'arrêter le cycle."
+[CLAUDE.md] -> "Tableau des objectifs réécrit avec les anciennes cibles en regard, la raison de la révision (cibles de départ incohérentes entre elles), la dérivation de chaque valeur depuis des références antérieures aux résultats, la limite honnête (décision prise après l'in-sample, l'out-of-sample tranchera) et une note sur les montants (paper avec 100 000 $ ou plus, à revérifier avec des sommes raisonnables dans la version finale). Ajout des commandes audit.sabotage et audit.report --out-of-sample."
 
-[src/bot/execution/planner.py] -> "Nouveau. Traduit les signaux en ordres, les ventes en premier, à 10 % du capital en parts entières. Une donnée manquante ne produit jamais d'ordre : une position n'est donc pas vendue à cause d'un trou de données."
+[tests/test_config.py] -> "Les cibles du projet sont figées par un test : toute modification future doit être assumée et documentée, pas glissée dans la config."
 
-[src/bot/execution/client.py] -> "Ajout de last_equity dans l'état du compte, nécessaire au contrôle de la perte journalière."
-
-[src/bot/journal/store.py] -> "Nouveau. Journal SQLite de chaque décision : signal, données d'entrée, décision du risque, ordre, prix d'exécution et slippage observé. La décision est écrite avant l'envoi : si l'écriture échoue, l'ordre ne part pas."
-
-[src/bot/data/market.py] -> "Ajout des derniers prix IEX et de AlpacaMarketData, qui recharge les clôtures SIP à chaque cycle. Une clôture manquante reste vide et aucune valeur n'est reportée."
-
-[src/bot/risk/checks.py] -> "Un prix peut maintenant être en avance sur l'horloge dans la limite de max_clock_skew_seconds. Sans cette tolérance, l'écart d'horloge pouvait faire refuser des prix valides."
-
-[src/bot/risk/state.py] -> "Ajout d'un stockage en mémoire, pour qu'un --dry-run ne modifie jamais l'état réel du risque."
-
-[src/bot/config.py] -> "Ajout de LiveConfig et max_clock_skew_seconds. Ces réglages deviennent obligatoires dans strategy.yaml : le bot refuse de démarrer s'ils manquent."
-
-[config/strategy.yaml] -> "Ajout de la section live (journal, fréquence, pannes tolérées, historique du signal, flux de prix) et de max_clock_skew_seconds à 5 secondes."
-
-[tests/test_main.py] -> "Nouveau. Vérifie la boucle complète avec un faux broker : doublons, redémarrage, ordre refusé, panne réseau, kill switch, trous de données et simulation."
-
-[tests/test_execution_units.py] -> "Nouveau. Vérifie le planificateur, le broker et le journal séparément."
-
-[tests/test_data_market.py] -> "Ajout des tests sur les derniers prix et les clôtures du bot."
-
-[tests/test_execution_client.py] -> "Ajout de last_equity au compte de test."
-
-[tests/test_risk_checks.py] -> "Ajout du test de tolérance d'horloge et de ses limites."
-
-[tests/test_risk_manager.py] -> "Ajout de max_clock_skew_seconds aux limites de test."
-
-[tests/test_config.py] -> "Ajout de max_clock_skew_seconds aux limites de test."
-
-[tests/test_audit_metrics.py] -> "Ajout de max_clock_skew_seconds aux limites de test."
-
-[tests/__init__.py] -> "Nouveau, vide. Fait de tests un paquet pour partager les faux objets entre fichiers de test."
-
-[MODIF.md] -> "Réécrit pour l'étape 6. Le récapitulatif de l'étape 5 est effacé, comme le prévoit la règle."
+[tests/test_audit_report.py] -> "Le seuil du Sharpe sous slippage x2 est calculé depuis les cibles et seuils de la config, au lieu d'une valeur en dur."

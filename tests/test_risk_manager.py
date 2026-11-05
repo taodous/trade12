@@ -85,6 +85,7 @@ def test_rejected_order_is_not_counted() -> None:
     assert manager.state.orders_count == 0
 
 
+@pytest.mark.risk_limit("order_limit")
 def test_order_limit_is_enforced() -> None:
     manager = make_manager()
     assert manager.review(ORDER, portfolio(), MARKET, CONTEXT).approved
@@ -114,6 +115,8 @@ def test_order_limit_survives_restart(tmp_path: Path) -> None:
     assert decision.reason is RejectReason.ORDER_LIMIT
 
 
+@pytest.mark.risk_limit("halted")
+@pytest.mark.risk_limit("daily_loss")
 def test_daily_loss_triggers_kill_switch_and_blocks_orders() -> None:
     manager = make_manager()
     losing = portfolio(equity=97_000.0, day_start=100_000.0)
@@ -136,6 +139,7 @@ def test_drawdown_is_measured_from_highest_equity_seen() -> None:
     assert manager.state.halt_reason is HaltReason.MAX_DRAWDOWN
 
 
+@pytest.mark.risk_limit("max_drawdown")
 def test_slow_decline_triggers_drawdown_without_any_daily_loss_trigger() -> None:
     manager = make_manager()
     equity = 100_000.0
@@ -204,6 +208,7 @@ def test_closing_orders_stay_available_after_halt() -> None:
 
 
 @pytest.mark.parametrize("equity", [float("nan"), float("inf"), 0.0, -1.0])
+@pytest.mark.risk_limit("invalid_portfolio")
 def test_invalid_portfolio_rejects_order_without_halting(equity: float) -> None:
     manager = make_manager()
     invalid = PortfolioState(equity=equity, day_start_equity=100_000.0)

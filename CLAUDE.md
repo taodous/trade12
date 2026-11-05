@@ -14,19 +14,31 @@ Objectifs secondaires :
 - Code Python de niveau production (typé, testé, lisible, modulaire)
 - Projet présentable sur GitHub comme démonstration de compétences
 
-## Objectifs de performance (cibles de départ, ajustables)
+## Objectifs de performance (révisés le 2026-11-05)
 
 Mesurés **out-of-sample**, frais et slippage inclus :
 
-| Critère | Cible |
-|---|---|
-| Rendement annualisé | 8 % à 15 % |
-| Max drawdown | inférieur à 10 % (seuil d'alerte), 15 % (seuil de rejet) |
-| Volatilité annualisée | inférieure à celle de SPY |
-| Sharpe ratio | supérieur à 1 |
-| Calmar ratio (rendement / max drawdown) | supérieur à 1 |
-| Mois positifs | au moins 60 % |
-| Comparaison à SPY | meilleur rendement ajusté du risque (Sharpe), même si le rendement brut est inférieur |
+| Critère | Cible | Cible de départ |
+|---|---|---|
+| Rendement annualisé | au moins 5 % | 8 % à 15 % |
+| Max drawdown | inférieur à 10 % (seuil d'alerte), 15 % (seuil de rejet) | inchangé |
+| Volatilité annualisée | inférieure à celle de SPY | inchangé |
+| Sharpe ratio | au moins 0,6 | supérieur à 1 |
+| Calmar ratio (rendement / max drawdown) | au moins 0,5 | supérieur à 1 |
+| Mois positifs | au moins 60 % | inchangé |
+| Comparaison à SPY | meilleur rendement ajusté du risque (Sharpe), même si le rendement brut est inférieur | inchangé |
+
+**Pourquoi la révision.** Les cibles de départ étaient incohérentes entre elles. Une volatilité inférieure à celle de SPY et un drawdown sous 10 % limitent la volatilité à environ 8 %. Viser 8 à 15 % de rendement avec cette volatilité exige un Sharpe de 1 à 2, ce que les stratégies ETF longues, sans levier et diversifiées n'atteignent pas durablement (fourchette habituelle de 0,6 à 0,9).
+
+**Comment elles sont dérivées.** Elles viennent de références fixées avant les résultats de V1, et non des chiffres de V1 :
+- **Sharpe :** le bas de la fourchette 0,6 à 0,9, annoncée dans le plan de l'étape 8 avant tout résultat.
+- **Rendement :** ce Sharpe multiplié par la volatilité visée de 8 % (0,6 x 8 % = 4,8 %), arrondi à 5 %.
+- **Calmar :** ce rendement divisé par le seuil d'alerte du drawdown (5 % / 10 %).
+- **Inchangés :** les seuils de drawdown, les critères de robustesse et les seuils de résultats suspects. Ils protègent contre le risque, on ne les assouplit pas.
+
+**Limite honnête.** Cette décision a été prise après avoir vu les résultats in-sample de V1. Elle n'est donc pas totalement indépendante. Le garde-fou est l'out-of-sample, encore jamais ouvert : c'est lui qui tranchera.
+
+**Montants.** Le paper trading se fait avec un capital important (100 000 $ ou plus) pour que l'arrondi en parts entières et la bande de rééquilibrage pèsent peu. Les cibles sont en pourcentage et ne dépendent pas du capital. Dans la version finale, avec des montants raisonnables, il faudra revérifier l'écart dû aux parts entières et aux frais fixes éventuels.
 
 Des résultats nettement au-dessus de ces cibles (rendement supérieur à 30 % par an, Sharpe supérieur à 2) ne sont pas une victoire : ils sont **suspects par défaut** (surajustement, look-ahead, erreur de calcul) et doivent être investigués avant toute autre chose.
 
@@ -156,6 +168,9 @@ uv run ruff check . && uv run ruff format .
 uv run mypy src
 uv run python -m bot.main        # lancer le bot (paper)
 uv run python -m audit.report    # générer le rapport d'audit
+uv run python -m audit.candidates  # compare les variantes pré-enregistrées (in-sample)
+uv run python -m audit.sabotage  # test de sabotage, à relancer après tout changement de code
+uv run python -m audit.report --out-of-sample   # ouvre l'out-of-sample (journalisé, à réserver à la validation finale)
 ```
 
 ## Feuille de route

@@ -19,3 +19,36 @@ class Strategy(Protocol):
         être exécuté qu'à partir de la séance suivante.
         """
         ...
+
+
+class WeightStrategy(Protocol):
+    """Stratégie pure qui vise un poids par symbole, en fraction du capital.
+
+    `warm_up` est le nombre de séances nécessaires avant le premier poids fiable. `max_weight` est
+    le plus grand poids qu'elle puisse viser pour un symbole. `required_symbols` liste les symboles
+    sans lesquels aucun poids n'est fiable, comme celui d'un filtre de régime.
+    """
+
+    @property
+    def warm_up(self) -> int:
+        """Retourne le nombre de séances nécessaires avant le premier poids fiable."""
+        ...
+
+    @property
+    def max_weight(self) -> float:
+        """Retourne le plus grand poids visé pour un symbole."""
+        ...
+
+    @property
+    def required_symbols(self) -> frozenset[str]:
+        """Retourne les symboles dont les données sont indispensables."""
+        ...
+
+    def target_weights(self, closes: pd.DataFrame) -> pd.DataFrame:
+        """Retourne le poids visé après chaque clôture, par séance et par symbole.
+
+        Le poids de la séance t n'utilise que les clôtures jusqu'à t : il ne peut être exécuté
+        qu'à partir de la séance suivante. Chaque poids est entre 0 et `max_weight`, sans valeur
+        manquante, et leur somme ne dépasse pas 1.
+        """
+        ...

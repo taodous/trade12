@@ -29,7 +29,13 @@ from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest, OrderR
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from bot import main as main_module
-from bot.config import ConfigError, MovingAverageParams, StrategyConfig, load_strategy_config
+from bot.config import (
+    ConfigError,
+    MovingAverageParams,
+    MovingAverageSettings,
+    StrategyConfig,
+    load_strategy_config,
+)
 from bot.data.market import DataFetchError, LatestPrice, Session
 from bot.execution.broker import REJECTED_BY_BROKER, Broker
 from bot.journal.store import STATUS_NOT_FOUND, Journal
@@ -188,6 +194,8 @@ class FakeMarket:
     missing_symbols: list[str] = field(default_factory=list)
     price_age: timedelta = timedelta(minutes=1)
     closes_error: Exception | None = None
+    # Dernier prix, qui peut s'écarter de la clôture de la veille, comme lors d'un gap.
+    latest_price: float = PRICE
 
     def sessions(self, start: date, end: date) -> list[Session]:
         return calendar()
@@ -202,19 +210,32 @@ class FakeMarket:
         return closes
 
     def latest_prices(self) -> dict[str, LatestPrice]:
-        return {symbol: LatestPrice(PRICE, NOW - self.price_age) for symbol in SYMBOLS}
+        return {symbol: LatestPrice(self.latest_price, NOW - self.price_age) for symbol in SYMBOLS}
 
 
 @dataclass
 class FixedStrategy:
+    """Vise `weight` sur chaque symbole long, 0 sinon. Les poids peuvent être fixés à la main."""
+
     signals: dict[str, int]
+    weight: float = 1 / len(SYMBOLS)
+    warm_up: int = 3
+    required_symbols: frozenset[str] = frozenset()
+    weights: dict[str, float] | None = None
     seen_columns: list[list[str]] = field(default_factory=list)
 
-    def generate(self, closes: pd.DataFrame) -> pd.DataFrame:
+    @property
+    def max_weight(self) -> float:
+        return self.weight
+
+    def target_weights(self, closes: pd.DataFrame) -> pd.DataFrame:
         self.seen_columns.append([str(column) for column in closes.columns])
+        values = self.weights or {
+            symbol: self.weight if signal == LONG else 0.0
+            for symbol, signal in self.signals.items()
+        }
         return pd.DataFrame(
-            {symbol: self.signals[str(symbol)] for symbol in closes.columns},
-            index=closes.index,
+            {symbol: values[str(symbol)] for symbol in closes.columns}, index=closes.index
         )
 
 
@@ -222,7 +243,9 @@ def make_config(**risk_overrides: Any) -> StrategyConfig:
     base = load_strategy_config()
     return base.model_copy(
         update={
-            "strategy": MovingAverageParams(fast_window=2, slow_window=3),
+            "strategy": MovingAverageSettings(
+                name="moving_average", params=MovingAverageParams(fast_window=2, slow_window=3)
+            ),
             "data": base.data.model_copy(update={"symbols": SYMBOLS}),
             "risk": base.risk.model_copy(update=risk_overrides),
             "live": base.live.model_copy(
@@ -323,6 +346,7 @@ def test_signal_comes_from_last_completed_session_not_today(tmp_path: Path) -> N
     assert inputs["bars"] == 4
 
 
+@pytest.mark.scenario("order_rejected")
 def test_risk_rejection_sends_nothing_and_records_why(tmp_path: Path) -> None:
     market = FakeMarket(price_age=timedelta(hours=2))
     harness = make_harness(tmp_path, market=market)
@@ -368,6 +392,7 @@ def test_order_limit_applies_across_a_cycle(tmp_path: Path) -> None:
     assert harness.decisions()["D"]["risk_reason"] == "order_limit"
 
 
+@pytest.mark.scenario("duplicate_order")
 def test_second_tick_does_not_trade_again(tmp_path: Path) -> None:
     harness = make_harness(tmp_path)
     harness.bot.tick(NOW)
@@ -376,6 +401,7 @@ def test_second_tick_does_not_trade_again(tmp_path: Path) -> None:
     assert len(harness.journal.decisions()) == len(SYMBOLS)
 
 
+@pytest.mark.scenario("duplicate_order")
 def test_restart_does_not_trade_again(tmp_path: Path) -> None:
     first = make_harness(tmp_path)
     first.bot.tick(NOW)
@@ -384,6 +410,7 @@ def test_restart_does_not_trade_again(tmp_path: Path) -> None:
     assert len(first.client.submitted) == len(SYMBOLS)
 
 
+@pytest.mark.scenario("duplicate_order")
 def test_crash_mid_cycle_cannot_duplicate_orders(tmp_path: Path) -> None:
     """Le cycle n'est pas marqué terminé : la reprise renvoie les mêmes identifiants, refusés."""
     first = make_harness(tmp_path)
@@ -445,6 +472,7 @@ def test_sells_are_sent_before_buys(tmp_path: Path) -> None:
     assert harness.client.submitted_symbols() == ["E", "A"]
 
 
+@pytest.mark.scenario("missing_data")
 def test_missing_close_does_not_sell_position_held(tmp_path: Path) -> None:
     """Un trou de données ne doit pas être confondu avec un signal de sortie."""
     market = FakeMarket(missing_symbols=["A"])
@@ -460,6 +488,7 @@ def test_missing_close_does_not_sell_position_held(tmp_path: Path) -> None:
     assert "A" not in harness.strategy.seen_columns[0]
 
 
+@pytest.mark.scenario("missing_data")
 def test_all_data_missing_still_completes_without_orders(tmp_path: Path) -> None:
     market = FakeMarket(missing_symbols=SYMBOLS)
     harness = make_harness(tmp_path, market=market)
@@ -468,11 +497,10 @@ def test_all_data_missing_still_completes_without_orders(tmp_path: Path) -> None
     assert harness.strategy.seen_columns == []
 
 
+@pytest.mark.scenario("missing_data")
 def test_too_few_sessions_raises_instead_of_trading(tmp_path: Path) -> None:
-    config = make_config().model_copy(
-        update={"strategy": MovingAverageParams(fast_window=2, slow_window=50)}
-    )
-    harness = make_harness(tmp_path, config=config)
+    harness = make_harness(tmp_path)
+    harness.strategy.warm_up = 50
     with pytest.raises(DataFetchError, match="séances"):
         harness.bot.tick(NOW)
     assert harness.client.submitted == []
@@ -493,6 +521,7 @@ def test_open_order_counts_towards_exposure(tmp_path: Path) -> None:
     assert harness.client.submitted_symbols() == ["B"]
 
 
+@pytest.mark.scenario("order_rejected")
 def test_broker_rejection_is_journaled_and_cycle_continues(tmp_path: Path) -> None:
     harness = make_harness(tmp_path)
     harness.client.submit_error = api_error(403)
@@ -505,6 +534,7 @@ def test_broker_rejection_is_journaled_and_cycle_continues(tmp_path: Path) -> No
     assert harness.journal.is_cycle_completed(TODAY)
 
 
+@pytest.mark.scenario("api_down")
 def test_network_failure_leaves_order_unknown_then_finds_it(tmp_path: Path) -> None:
     """La réponse est perdue mais l'ordre est parti : le suivi le retrouve sans le renvoyer."""
     harness = make_harness(tmp_path, {**ALL_FLAT, "A": LONG})
@@ -559,6 +589,7 @@ def test_journal_failure_prevents_the_order(tmp_path: Path) -> None:
     assert harness.client.submitted == []
 
 
+@pytest.mark.scenario("crash")
 def test_daily_loss_cancels_orders_closes_positions_and_stops(tmp_path: Path) -> None:
     harness = make_harness(tmp_path)
     harness.client.equity = "97000"
@@ -576,6 +607,31 @@ def test_daily_loss_cancels_orders_closes_positions_and_stops(tmp_path: Path) ->
     assert harness.decisions()["A"]["client_order_id"].startswith("kill-")
 
 
+@pytest.mark.scenario("opening_gap")
+def test_opening_gap_refuses_orders_on_aberrant_price(tmp_path: Path) -> None:
+    """Un gap de -25 % dépasse la variation tolérée : aucun achat sur un prix douteux."""
+    harness = make_harness(tmp_path, market=FakeMarket(latest_price=PRICE * 0.75))
+    harness.bot.tick(NOW)
+    assert harness.client.submitted == []
+    assert {row["risk_reason"] for row in harness.decisions().values()} == {"aberrant_price"}
+
+
+@pytest.mark.scenario("opening_gap")
+def test_opening_gap_loss_triggers_kill_switch_before_any_order(tmp_path: Path) -> None:
+    """Un gap de -10 % sur une position fait perdre 4 % : seul l'ordre de fermeture part."""
+    harness = make_harness(tmp_path, market=FakeMarket(latest_price=PRICE * 0.9))
+    harness.client.equity = "96000"
+    harness.client.positions = [make_position("A", 400.0)]
+
+    code = harness.bot.run(once=False, now=lambda: NOW)
+
+    assert code == EXIT_HALTED
+    assert harness.client.submitted_symbols() == ["A"]
+    assert harness.client.submitted[0].side == AlpacaOrderSide.SELL
+    assert harness.decisions()["A"]["note"] == "kill_switch"
+
+
+@pytest.mark.scenario("crash")
 def test_kill_switch_closes_even_with_stale_data_or_order_limit(tmp_path: Path) -> None:
     config = make_config(max_orders_per_day=1)
     market = FakeMarket(price_age=timedelta(days=3))
@@ -587,6 +643,7 @@ def test_kill_switch_closes_even_with_stale_data_or_order_limit(tmp_path: Path) 
     assert harness.client.submitted_symbols() == ["A"]
 
 
+@pytest.mark.scenario("crash")
 def test_kill_switch_works_when_market_is_closed(tmp_path: Path) -> None:
     harness = make_harness(tmp_path)
     harness.client.is_open = False
@@ -604,6 +661,8 @@ def test_kill_switch_already_active_blocks_trading_after_restart(tmp_path: Path)
     assert harness.journal.decisions() == []
 
 
+@pytest.mark.scenario("crash")
+@pytest.mark.risk_limit("halted")
 def test_kill_switch_triggered_mid_cycle_stops_buying(tmp_path: Path) -> None:
     """Le kill switch est évalué à nouveau par `review`, avec le capital lu pour le cycle."""
     harness = make_harness(tmp_path)
@@ -667,6 +726,7 @@ def test_dry_run_kill_switch_does_not_touch_the_account(tmp_path: Path) -> None:
     assert harness.decisions()["A"]["status"] == STATUS_DRY_RUN
 
 
+@pytest.mark.scenario("api_down")
 def test_run_stops_after_consecutive_failures(tmp_path: Path) -> None:
     harness = make_harness(tmp_path)
     harness.client.clock_error = RequestsConnectionError("panne")
@@ -674,6 +734,7 @@ def test_run_stops_after_consecutive_failures(tmp_path: Path) -> None:
     assert len(harness.naps) == 1
 
 
+@pytest.mark.scenario("api_down")
 def test_run_recovers_from_a_single_failure(tmp_path: Path) -> None:
     harness = make_harness(tmp_path)
     harness.client.clock_error = api_error(500)
@@ -706,6 +767,71 @@ def test_run_once_reports_failure(tmp_path: Path) -> None:
 def test_weight_above_position_limit_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Poids"):
         make_harness(tmp_path, config=make_config(max_position_pct=0.1))
+
+
+# Stratégie rééquilibrée chaque mois
+
+
+def rebalanced_config() -> StrategyConfig:
+    base = make_config()
+    return base.model_copy(update={"strategy": base.candidates[0]})
+
+
+def test_rebalanced_strategy_trades_on_first_session_of_month(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path, config=rebalanced_config())
+    harness.journal.complete_cycle(date(2026, 10, 30), NOW)
+    harness.bot.tick(NOW)
+    assert harness.client.submitted_symbols() == SYMBOLS
+
+
+def test_rebalanced_strategy_waits_for_next_month(tmp_path: Path) -> None:
+    """Comme le backtest, la stratégie mensuelle ne décide qu'une fois par mois."""
+    harness = make_harness(tmp_path, config=rebalanced_config())
+    harness.journal.complete_cycle(YESTERDAY, NOW)
+    harness.bot.tick(NOW)
+    assert harness.client.submitted == []
+    assert harness.journal.decisions() == []
+    assert not harness.journal.is_cycle_completed(TODAY)
+
+
+def test_dry_run_of_rebalanced_strategy_ignores_the_month(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path, config=rebalanced_config(), dry_run=True)
+    harness.journal.complete_cycle(YESTERDAY, NOW)
+    harness.bot.tick(NOW)
+    assert len(harness.journal.decisions()) == len(SYMBOLS)
+
+
+def test_rebalance_brings_position_back_to_its_weight(tmp_path: Path) -> None:
+    """A vaut 10 % du capital pour un poids visé de 20 % : achat de la différence."""
+    harness = make_harness(tmp_path, {**ALL_FLAT, "A": LONG}, config=rebalanced_config())
+    harness.client.positions = [make_position("A", 100.0)]
+    harness.bot.tick(NOW)
+    assert harness.client.submitted_symbols() == ["A"]
+    assert harness.client.submitted[0].qty == 100.0
+
+
+def test_every_decision_records_its_target_weight(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path, {**ALL_LONG, "B": FLAT})
+    harness.bot.tick(NOW)
+    rows = harness.decisions()
+    assert json.loads(rows["A"]["inputs"])["target_weight"] == pytest.approx(0.2)
+    assert json.loads(rows["B"]["inputs"])["target_weight"] == 0.0
+    assert rows["B"]["signal"] == FLAT
+
+
+@pytest.mark.scenario("missing_data")
+def test_missing_required_symbol_blocks_every_order(tmp_path: Path) -> None:
+    """Sans le symbole du filtre de régime, aucun poids n'est fiable : rien n'est vendu."""
+    market = FakeMarket(missing_symbols=["A"])
+    harness = make_harness(tmp_path, ALL_FLAT, market=market)
+    harness.strategy.required_symbols = frozenset({"A"})
+    harness.client.positions = [make_position("B", 50.0)]
+
+    harness.bot.tick(NOW)
+
+    assert harness.client.submitted == []
+    assert {row["note"] for row in harness.decisions().values()} == {"missing_data"}
+    assert harness.strategy.seen_columns == []
 
 
 def test_main_reports_invalid_config(

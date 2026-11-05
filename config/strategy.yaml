@@ -24,11 +24,47 @@ risk:
 # Kill switch, plus haut du capital et compteur d'ordres. Relatif à la racine du projet.
 risk_state_file: data/risk_state.json
 
-strategy:
-  # Stratégie de référence, qui sert à valider la chaîne. Fenêtres conventionnelles, non optimisées.
-  # Toute modification est une nouvelle variante à inscrire au registre d'audit.
-  fast_window: 50
-  slow_window: 200
+# Variantes de l'étape 8, pré-enregistrées le 2026-11-05 avant tout résultat. Paramètres
+# conventionnels, non optimisés. Comparées par `python -m audit.candidates`, qui applique la règle
+# de sélection : meilleur Sharpe in-sample parmi les drawdowns in-sample sous le seuil de rejet.
+candidates:
+  # V1 : tendance (clôture au-dessus de la moyenne 200), inverse de la volatilité sur 3 mois,
+  # volatilité cible de 8 % par an, rééquilibrage mensuel.
+  - &v1
+    name: risk_targeted
+    params: &v1_params
+      trend: sma
+      trend_window: 200
+      volatility_window: 63
+      target_volatility: 0.08
+      max_weight: 0.20
+      max_exposure: 1.00
+      regime_filter: false
+      regime_symbol: SPY
+      regime_window: 200
+      regime_scale: 0.5
+      risky_symbols: [SPY, QQQ, IWM, EFA, EEM, VNQ]
+    rebalance:
+      frequency: monthly
+      # En paper, un écart inférieur à 2 % du capital ne fait pas d'ordre.
+      band_pct: 0.02
+  # V2 : V1, avec l'exposition aux actifs risqués divisée par 2 quand SPY est sous sa moyenne 200.
+  - <<: *v1
+    params:
+      <<: *v1_params
+      regime_filter: true
+  # V3 : V1, avec un momentum sur 12 mois (252 séances) comme filtre de tendance.
+  - <<: *v1
+    params:
+      <<: *v1_params
+      trend: momentum
+      trend_window: 252
+
+# Stratégie utilisée par le bot et par l'audit. Toute modification est une nouvelle variante à
+# inscrire au registre d'audit.
+# - Étape 7 : stratégie de référence (moving_average, fenêtres 50 et 200), rejetée par l'audit.
+# - Étape 8 : V1, retenue le 2026-11-05 par la règle de sélection (reports/candidates.json).
+strategy: *v1
 
 data:
   # Univers fixé a priori : ETF américains multi-actifs très liquides, tous cotés avant le début
@@ -62,12 +98,18 @@ backtest:
   registry_file: audit/variants.jsonl
 
 # Objectifs de CLAUDE.md, évalués sur les rendements nets de frais et de slippage.
+# Révisés le 2026-11-05 par décision humaine, après les résultats in-sample de V1 mais avant toute
+# ouverture de l'out-of-sample. Dérivés de références fixées avant ces résultats, et non des
+# chiffres de V1 (voir CLAUDE.md). Anciennes valeurs : rendement 0.08, Sharpe 1.0, Calmar 1.0.
 targets:
-  min_annual_return: 0.08
+  # Sharpe minimal x volatilité visée par la stratégie (0.6 x 8 %), arrondi.
+  min_annual_return: 0.05
   max_drawdown_alert: 0.10
   max_drawdown_reject: 0.15
-  min_sharpe: 1.0
-  min_calmar: 1.0
+  # Bas de la fourchette 0.6 à 0.9 annoncée dans le plan de l'étape 8, avant tout résultat.
+  min_sharpe: 0.6
+  # Rendement minimal / seuil d'alerte du drawdown (5 % / 10 %).
+  min_calmar: 0.5
   min_positive_months: 0.60
   suspicious_annual_return: 0.30
   suspicious_sharpe: 2.0
@@ -89,3 +131,70 @@ api_retry:
   max_attempts: 5
   base_delay_seconds: 1.0
   max_delay_seconds: 60.0
+
+# Protocole d'audit (étape 7). Paramètres et seuils fixés le 2026-11-04, avant tout résultat de
+# robustesse. Les modifier après avoir vu un résultat revient à tester une nouvelle variante.
+audit:
+  # Rapports HTML et JSON. Relatif à la racine du projet, non commité.
+  report_dir: reports
+  # Journal de chaque ouverture de l'out-of-sample, à commiter.
+  out_of_sample_log: audit/out_of_sample_log.jsonl
+  walk_forward:
+    # 2 ans d'entraînement puis 6 mois de test, décalés de 6 mois, à l'intérieur de l'in-sample.
+    train_sessions: 504
+    test_sessions: 126
+  monte_carlo:
+    seed: 20261104
+    simulations: 2000
+    # Blocs d'un mois environ, pour garder l'enchaînement des jours.
+    block_sessions: 21
+  sensitivity:
+    # 20 % et 40 % autour des valeurs choisies, arrondis à l'entier. Chaque réglage est inscrit au
+    # registre. Pour la stratégie de référence, c'est la grille de l'étape 7 : 30 à 70 et 120 à 280.
+    # Paramètres variés selon la stratégie, fixés le 2026-11-05 avant tout résultat.
+    parameters:
+      moving_average: [fast_window, slow_window]
+      risk_targeted: [trend_window, volatility_window]
+    relative_steps: [0.6, 0.8, 1.0, 1.2, 1.4]
+    slippage_multipliers: [2.0, 3.0]
+  stress:
+    # Gap synthétique à l'ouverture, sur tout l'univers, au pire moment.
+    synthetic_gap_pct: 0.10
+    # Crises comprises dans l'in-sample. Dates de début et de fin incluses.
+    scenarios:
+      - {name: volmageddon_2018, start: 2018-01-26, end: 2018-04-02}
+      - {name: covid_2020, start: 2020-02-19, end: 2020-04-30}
+      - {name: actions_et_obligations_2022, start: 2022-01-03, end: 2022-12-30}
+    # Scénarios opérationnels exigés par CLAUDE.md, chacun couvert par au moins un test marqué.
+    required_scenarios:
+      [crash, opening_gap, missing_data, api_down, order_rejected, duplicate_order]
+  sabotage:
+    report_file: reports/sabotage.json
+    # Tests lancés contre chaque sabotage.
+    test_paths:
+      - tests/test_risk_checks.py
+      - tests/test_risk_manager.py
+      - tests/test_execution_units.py
+      - tests/test_main.py
+      - tests/test_strategy_risk_targeted.py
+    # Limite de temps d'un lancement : le plus grand des deux. Un sabotage qui fait tourner un
+    # test sans fin est arrêté avant d'épuiser la mémoire.
+    min_timeout_seconds: 30
+    # Limite du lancement sans sabotage, qui doit réussir.
+    baseline_timeout_seconds: 600
+    timeout_multiplier: 3.0
+  thresholds:
+    # Drawdown au percentile 95, sur le pire des deux tirages Monte Carlo.
+    max_monte_carlo_drawdown_p95: 0.15
+    min_walk_forward_positive_windows: 0.60
+    # Sharpe des fenêtres de test sur Sharpe moyen des fenêtres d'entraînement.
+    min_walk_forward_efficiency: 0.5
+    # Un réglage voisin est stable si son Sharpe atteint cette fraction du Sharpe choisi.
+    neighbor_sharpe_ratio: 0.80
+    min_neighbor_share: 0.70
+    # Avec ce multiplicateur de slippage, le Sharpe doit atteindre cette fraction de min_sharpe.
+    stressed_slippage_multiplier: 2.0
+    min_stressed_sharpe_ratio: 0.80
+    min_deflated_sharpe_probability: 0.95
+    # En dessous, l'écart d'exécution entre backtest et paper n'est pas mesurable.
+    min_paper_fills: 20

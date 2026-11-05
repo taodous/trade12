@@ -9,11 +9,17 @@ import pytest
 from audit import backtest as backtest_module
 from audit.backtest import (
     BacktestError,
+    BacktestRun,
+    evaluate_in_sample,
+    evaluate_out_of_sample,
+    executed_targets,
     load_in_sample,
+    order_targets,
     run_buy_and_hold,
     run_in_sample,
     run_strategy,
-    target_weights,
+    run_weights,
+    variant_definition,
 )
 from audit.registry import record_variant, variant_id
 from bot.config import (
@@ -21,11 +27,14 @@ from bot.config import (
     ConfigError,
     DataConfig,
     MovingAverageParams,
+    MovingAverageSettings,
+    RebalanceConfig,
     StrategyConfig,
     load_strategy_config,
 )
 from bot.data.store import BarStore
-from bot.strategy.base import FLAT, LONG
+from bot.strategy.base import FLAT, LONG, Strategy
+from bot.strategy.equal_weight import EqualWeight
 from bot.strategy.moving_average import MovingAverageCrossover
 
 NOW = datetime(2026, 11, 3, tzinfo=UTC)
@@ -51,6 +60,25 @@ class ScriptedStrategy:
         return self.signals.loc[closes.index]
 
 
+MONTHLY = RebalanceConfig(frequency="monthly", band_pct=0.02)
+REFERENCE = MovingAverageSettings(
+    name="moving_average", params=MovingAverageParams(fast_window=50, slow_window=200)
+)
+
+
+def run_signals(
+    strategy: Strategy,
+    opens: pd.DataFrame,
+    closes: pd.DataFrame,
+    weight: float,
+    start: int,
+    config: BacktestConfig,
+) -> BacktestRun:
+    """Exécute une stratégie à signaux à poids égal, sans rééquilibrage."""
+    equal = EqualWeight(strategy, weight=weight, warm_up=start)
+    return run_strategy(equal, opens, closes, start, config, None)
+
+
 def compound(returns: pd.Series) -> float:
     return float(np.prod(1 + returns.to_numpy()))
 
@@ -73,17 +101,20 @@ def random_prices(sessions: int = 300, seed: int = 0) -> tuple[pd.DataFrame, pd.
     return opens, closes
 
 
+def scripted_orders(signals: pd.DataFrame, weight: float) -> pd.Series:
+    strategy = EqualWeight(ScriptedStrategy(signals), weight=weight, warm_up=0)
+    return order_targets(executed_targets(strategy, signals), 0, None)["A"]
+
+
 def test_target_weights_shift_signal_by_one_session() -> None:
-    signals = frame({"A": [FLAT, LONG, LONG, FLAT, FLAT]})
-    weights = target_weights(signals, 0.5)["A"]
+    weights = scripted_orders(frame({"A": [FLAT, LONG, LONG, FLAT, FLAT]}), 0.5)
     assert weights.isna().tolist() == [True, True, False, True, False]
     assert weights.iloc[2] == 0.5
     assert weights.iloc[4] == 0.0
 
 
 def test_target_weights_never_order_on_signal_session() -> None:
-    signals = frame({"A": [LONG, LONG, LONG]})
-    weights = target_weights(signals, 1.0)["A"]
+    weights = scripted_orders(frame({"A": [LONG, LONG, LONG]}), 1.0)
     assert weights.isna().tolist() == [True, False, True]
 
 
@@ -92,7 +123,7 @@ def test_fill_happens_at_next_open_and_matches_hand_computation() -> None:
     closes = opens + 0.5
     signals = frame({"A": [LONG, LONG, FLAT, FLAT, FLAT, FLAT]})
 
-    run = run_strategy(ScriptedStrategy(signals), opens, closes, 0.5, 0, NO_COSTS)
+    run = run_signals(ScriptedStrategy(signals), opens, closes, 0.5, 0, NO_COSTS)
 
     # Achat de 500 $ à 11 après le signal de la séance 0, vente à 13 après celui de la séance 2.
     expected_final = 1000 - 500 + 500 / 11 * 13
@@ -106,7 +137,7 @@ def test_price_move_on_signal_session_is_not_captured() -> None:
     opens = frame({"A": [10.0, 20.0, 20.0, 20.0]})
     closes = frame({"A": [20.0, 20.0, 20.0, 20.0]})
     signals = frame({"A": [LONG, LONG, LONG, LONG]})
-    run = run_strategy(ScriptedStrategy(signals), opens, closes, 1.0, 0, NO_COSTS)
+    run = run_signals(ScriptedStrategy(signals), opens, closes, 1.0, 0, NO_COSTS)
     assert compound(run.returns) == pytest.approx(1.0)
 
 
@@ -115,7 +146,7 @@ def test_gap_at_execution_open_is_not_captured() -> None:
     opens = frame({"A": [10.0, 15.0, 15.0]})
     closes = frame({"A": [10.0, 15.0, 15.0]})
     signals = frame({"A": [LONG, LONG, LONG]})
-    run = run_strategy(ScriptedStrategy(signals), opens, closes, 1.0, 0, NO_COSTS)
+    run = run_signals(ScriptedStrategy(signals), opens, closes, 1.0, 0, NO_COSTS)
     assert compound(run.returns) == pytest.approx(1.0)
 
 
@@ -124,7 +155,7 @@ def test_costs_match_hand_computation() -> None:
     closes = opens + 0.5
     signals = frame({"A": [LONG, LONG, FLAT, FLAT, FLAT, FLAT]})
 
-    run = run_strategy(ScriptedStrategy(signals), opens, closes, 0.5, 0, COSTS)
+    run = run_signals(ScriptedStrategy(signals), opens, closes, 0.5, 0, COSTS)
 
     shares = 500 / 11
     cost_in = shares * 11 * 1.01 * 1.001
@@ -135,8 +166,8 @@ def test_costs_match_hand_computation() -> None:
 def test_costs_reduce_returns() -> None:
     opens, closes = random_prices()
     strategy = MovingAverageCrossover(MovingAverageParams(fast_window=5, slow_window=20))
-    gross = run_strategy(strategy, opens, closes, 0.5, 20, NO_COSTS)
-    net = run_strategy(strategy, opens, closes, 0.5, 20, COSTS)
+    gross = run_signals(strategy, opens, closes, 0.5, 20, NO_COSTS)
+    net = run_signals(strategy, opens, closes, 0.5, 20, COSTS)
     assert gross.orders == net.orders
     assert compound(net.returns) < compound(gross.returns)
 
@@ -144,8 +175,8 @@ def test_costs_reduce_returns() -> None:
 def test_past_results_do_not_change_when_data_is_added() -> None:
     opens, closes = random_prices()
     strategy = MovingAverageCrossover(MovingAverageParams(fast_window=5, slow_window=20))
-    full = run_strategy(strategy, opens, closes, 0.5, 20, COSTS)
-    cut = run_strategy(strategy, opens.iloc[:150], closes.iloc[:150], 0.5, 20, COSTS)
+    full = run_signals(strategy, opens, closes, 0.5, 20, COSTS)
+    cut = run_signals(strategy, opens.iloc[:150], closes.iloc[:150], 0.5, 20, COSTS)
     pd.testing.assert_series_equal(
         cut.returns, full.returns.iloc[: len(cut.returns)], check_freq=False
     )
@@ -154,7 +185,7 @@ def test_past_results_do_not_change_when_data_is_added() -> None:
 def test_exposure_never_exceeds_capital() -> None:
     opens, closes = random_prices()
     signals = pd.DataFrame(LONG, index=closes.index, columns=closes.columns)
-    run = run_strategy(ScriptedStrategy(signals), opens, closes, 0.5, 0, COSTS)
+    run = run_signals(ScriptedStrategy(signals), opens, closes, 0.5, 0, COSTS)
     assert run.max_exposure <= 1.0
     assert run.open_trades == 2
 
@@ -185,7 +216,7 @@ def test_invalid_prices_are_rejected() -> None:
         (opens.iloc[:5], closes.iloc[:5]),
     ]:
         with pytest.raises(BacktestError):
-            run_strategy(strategy, bad_opens, bad_closes, 0.5, 20, NO_COSTS)
+            run_signals(strategy, bad_opens, bad_closes, 0.5, 20, NO_COSTS)
 
 
 def make_config(symbols: list[str], in_sample_end: date) -> StrategyConfig:
@@ -193,7 +224,9 @@ def make_config(symbols: list[str], in_sample_end: date) -> StrategyConfig:
     return base.model_copy(
         update={
             "risk": base.risk.model_copy(update={"max_position_pct": 0.5}),
-            "strategy": MovingAverageParams(fast_window=5, slow_window=20),
+            "strategy": MovingAverageSettings(
+                name="moving_average", params=MovingAverageParams(fast_window=5, slow_window=20)
+            ),
             "data": DataConfig(
                 symbols=symbols,
                 start_date=date(2016, 1, 4),
@@ -333,3 +366,157 @@ def test_project_split_precedes_end_of_data() -> None:
     config = load_strategy_config()
     assert config.backtest.in_sample_end == date(2022, 12, 31)
     assert config.backtest.benchmark in config.data.symbols
+
+
+def test_orders_start_with_current_positions() -> None:
+    executed = frame({"A": [0.5, 0.5, 0.5, 0.0, 0.0], "B": [0.0, 0.5, 0.5, 0.5, 0.5]})
+    weights = order_targets(executed, 2, None)
+    assert weights.iloc[:2].isna().all().all()
+    assert weights.iloc[2].tolist() == [0.5, 0.5]
+    assert weights["A"].iloc[3] == 0.0
+    assert weights["B"].iloc[3:].isna().all()
+
+
+@pytest.mark.parametrize("start", [-1, 5])
+def test_orders_refuse_start_outside_sessions(start: int) -> None:
+    executed = frame({"A": [0.5, 0.5, 0.5, 0.0, 0.0]})
+    with pytest.raises(BacktestError, match="départ"):
+        order_targets(executed, start, None)
+
+
+def test_monthly_rebalance_orders_every_symbol_on_first_session_of_month() -> None:
+    index = pd.bdate_range("2024-01-29", "2024-03-05", name="session")
+    executed = pd.DataFrame(0.3, index=index, columns=["A", "B"])
+    weights = order_targets(executed, 0, MONTHLY)
+    ordered = [day.date().isoformat() for day in weights.dropna().index]
+    assert ordered == ["2024-01-29", "2024-02-01", "2024-03-01"]
+    assert (weights.dropna() == 0.3).all().all()
+
+
+def test_monthly_rebalance_restores_drifted_weights() -> None:
+    """A double en janvier : le rééquilibrage de février le ramène à son poids visé."""
+    index = pd.bdate_range("2024-01-02", "2024-02-29", name="session")
+    prices = pd.DataFrame({"A": np.linspace(100, 200, len(index)), "B": 100.0}, index=index)
+    targets = pd.DataFrame(0.4, index=index, columns=["A", "B"])
+    without = run_weights(prices, prices, order_targets(targets, 0, None), 0, NO_COSTS)
+    with_rebalance = run_weights(prices, prices, order_targets(targets, 0, MONTHLY), 0, NO_COSTS)
+    assert with_rebalance.orders > without.orders
+
+
+class FixedWeights:
+    """Stratégie à poids écrits à la main, pour tester leur validation."""
+
+    def __init__(self, weights: pd.DataFrame, max_weight: float = 1.0) -> None:
+        self.weights = weights
+        self.max_weight = max_weight
+        self.warm_up = 0
+        self.required_symbols: frozenset[str] = frozenset()
+
+    def target_weights(self, closes: pd.DataFrame) -> pd.DataFrame:
+        return self.weights
+
+
+@pytest.mark.parametrize(
+    ("values", "cap", "message"),
+    [
+        ([0.1, float("nan")], 1.0, "manquant"),
+        ([0.1, -0.1], 1.0, "négatif"),
+        ([0.1, 0.3], 0.2, "plafond"),
+        ([0.6, 0.6], 1.0, "capital"),
+    ],
+)
+def test_invalid_strategy_weights_are_refused(
+    values: list[float], cap: float, message: str
+) -> None:
+    closes = frame({"A": [1.0], "B": [1.0]})
+    weights = pd.DataFrame([values], index=closes.index, columns=closes.columns)
+    with pytest.raises(BacktestError, match=message):
+        executed_targets(FixedWeights(weights, cap), closes)
+
+
+def test_misaligned_strategy_weights_are_refused() -> None:
+    closes = frame({"A": [1.0, 2.0]})
+    weights = pd.DataFrame({"A": [0.1]}, index=closes.index[:1])
+    with pytest.raises(BacktestError, match="alignés"):
+        executed_targets(FixedWeights(weights), closes)
+
+
+def test_run_weights_refuses_misaligned_weights() -> None:
+    opens, closes = random_prices(60)
+    strategy = EqualWeight(
+        MovingAverageCrossover(MovingAverageParams(fast_window=5, slow_window=20)), 0.5, 20
+    )
+    weights = order_targets(executed_targets(strategy, closes), 0, None)
+    with pytest.raises(BacktestError, match="alignés"):
+        run_weights(opens, closes, weights.iloc[:-1], 20, NO_COSTS)
+
+
+def test_reference_variant_keeps_its_stage_7_definition() -> None:
+    """Changer cette forme changerait l'identifiant des variantes déjà inscrites au registre."""
+    config = load_strategy_config().model_copy(update={"strategy": REFERENCE})
+    definition = variant_definition(config)
+    assert set(definition) == {
+        "strategy",
+        "params",
+        "symbols",
+        "start_date",
+        "in_sample_end",
+        "fees_pct",
+        "slippage_pct",
+    }
+    assert definition["strategy"] == "MovingAverageCrossover"
+    assert variant_id(definition) == "9446033063a5"
+
+
+def test_configured_strategy_is_the_selected_candidate() -> None:
+    config = load_strategy_config()
+    assert config.strategy == config.candidates[0]
+    assert variant_id(variant_definition(config)) == "aa32f0c7ab3e"
+
+
+def test_rebalanced_variant_includes_its_rebalance_policy() -> None:
+    config = load_strategy_config()
+    candidate = config.candidates[0]
+    definition = variant_definition(config, candidate)
+    assert definition["strategy"] == "RiskTargeted"
+    assert definition["rebalance"] == {"frequency": "monthly", "band_pct": 0.02}
+
+
+def test_in_sample_report_can_be_written_elsewhere(tmp_path: Path) -> None:
+    fill_store(tmp_path)
+    config = make_config(["A", "B"], date(2022, 12, 31))
+    target = tmp_path / "ailleurs" / "report.json"
+    evaluation = evaluate_in_sample(config, tmp_path, NOW, target)
+    assert json.loads(target.read_text(encoding="utf-8"))["variant"] == evaluation.report.variant
+    assert not (tmp_path / "reports" / "report.json").exists()
+
+
+def test_out_of_sample_starts_empty_after_the_split_and_is_logged(tmp_path: Path) -> None:
+    _, closes = fill_store(tmp_path)
+    end = pd.Timestamp(closes.index[200]).date()
+    config = make_config(["A", "B"], end)
+
+    evaluation = evaluate_out_of_sample(config, tmp_path, NOW)
+
+    report = evaluation.report
+    assert report.sample == "out_of_sample"
+    assert report.start == pd.Timestamp(closes.index[201]).date()
+    assert report.strategy.sessions == report.benchmark.sessions == len(closes) - 201
+    log = (tmp_path / config.audit.out_of_sample_log).read_text(encoding="utf-8").splitlines()
+    assert json.loads(log[0]) == {"opened_at": NOW.isoformat(), "variant": report.variant}
+    assert (tmp_path / "reports" / "backtest_out_of_sample.json").exists()
+    assert not (tmp_path / "audit" / "variants.jsonl").exists()
+
+
+def test_out_of_sample_needs_sessions_after_the_split(tmp_path: Path) -> None:
+    fill_store(tmp_path)
+    config = make_config(["A", "B"], date(2030, 1, 1))
+    with pytest.raises(BacktestError, match="Aucune séance"):
+        evaluate_out_of_sample(config, tmp_path, NOW)
+
+
+def test_out_of_sample_needs_history_for_the_signal(tmp_path: Path) -> None:
+    _, closes = fill_store(tmp_path)
+    config = make_config(["A", "B"], pd.Timestamp(closes.index[5]).date())
+    with pytest.raises(BacktestError, match="Historique"):
+        evaluate_out_of_sample(config, tmp_path, NOW)

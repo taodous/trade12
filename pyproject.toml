@@ -58,6 +58,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers --cov --cov-report=term-missing"
+markers = [
+    "scenario(name): scénario opérationnel couvert par le test, lu par audit.stress_tests",
+    "risk_limit(reason): motif de refus ou d'arrêt déclenché par le test, lu par audit.stress_tests",
+]
 
 [tool.coverage.run]
 source = ["bot.strategy", "bot.risk", "bot.execution", "bot.data", "bot.retry", "audit"]

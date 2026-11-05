@@ -8,7 +8,7 @@ from alpaca.common.exceptions import APIError
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import OrderStatus
 
-from bot.config import RetryConfig
+from bot.config import RebalanceConfig, RetryConfig
 from bot.execution.broker import (
     REJECTED_BY_BROKER,
     Broker,
@@ -17,7 +17,7 @@ from bot.execution.broker import (
     OrderReport,
     make_client_order_id,
 )
-from bot.execution.planner import PlanNote, plan_orders
+from bot.execution.planner import PlanItem, PlanNote, plan_orders
 from bot.journal.store import STATUS_NOT_FOUND, Decision, Journal, observed_slippage
 from bot.risk.models import OrderSide, PortfolioState, Position
 from bot.risk.state import InMemoryRiskStateStore, RiskState
@@ -30,19 +30,28 @@ RETRY = RetryConfig(max_attempts=2, base_delay_seconds=0.001, max_delay_seconds=
 PORTFOLIO = PortfolioState(equity=100_000.0, day_start_equity=100_000.0)
 
 
+MONTHLY = RebalanceConfig(frequency="monthly", band_pct=0.02)
+
+
 def plan(
     signals: dict[str, int | None],
     portfolio: PortfolioState = PORTFOLIO,
     open_orders: set[str] | None = None,
     prices: dict[str, float] | None = None,
+    rebalance: RebalanceConfig | None = None,
 ) -> dict[str, Any]:
+    """Planifie avec un poids de 10 % par signal long."""
+    targets = {
+        symbol: None if signal is None else (0.1 if signal == LONG else 0.0)
+        for symbol, signal in signals.items()
+    }
     items = plan_orders(
-        signals,
+        targets,
         portfolio,
         open_orders or set(),
         {"A": 100.0, "B": 100.0} if prices is None else prices,
-        0.1,
         SESSION,
+        rebalance,
     )
     return {item.symbol: item for item in items}
 
@@ -84,6 +93,7 @@ def test_plan_covers_short_position_on_flat_signal() -> None:
     assert order.quantity == 5.0
 
 
+@pytest.mark.scenario("missing_data")
 def test_plan_missing_signal_never_produces_an_order() -> None:
     portfolio = PortfolioState(100_000.0, 100_000.0, {"A": Position(10.0, 1000.0)})
     item = plan({"A": None}, portfolio)["A"]
@@ -116,9 +126,50 @@ def test_plan_skips_position_too_small() -> None:
 def test_plan_orders_sells_first() -> None:
     portfolio = PortfolioState(100_000.0, 100_000.0, {"B": Position(10.0, 1000.0)})
     items = plan_orders(
-        {"A": LONG, "B": FLAT}, portfolio, set(), {"A": 100.0, "B": 100.0}, 0.1, SESSION
+        {"A": 0.1, "B": 0.0}, portfolio, set(), {"A": 100.0, "B": 100.0}, SESSION, None
     )
     assert [item.symbol for item in items] == ["B", "A"]
+
+
+def holding(quantity: float) -> PortfolioState:
+    return PortfolioState(100_000.0, 100_000.0, {"A": Position(quantity, quantity * 100.0)})
+
+
+def test_rebalance_buys_the_missing_shares() -> None:
+    order = plan({"A": LONG}, holding(50.0), rebalance=MONTHLY)["A"].order
+    assert order.side is OrderSide.BUY
+    assert order.quantity == 50.0
+
+
+def test_rebalance_sells_the_excess_shares() -> None:
+    order = plan({"A": LONG}, holding(150.0), rebalance=MONTHLY)["A"].order
+    assert order.side is OrderSide.SELL
+    assert order.quantity == 50.0
+
+
+def test_rebalance_ignores_a_gap_within_the_band() -> None:
+    """95 parts au lieu de 100 : 500 $ d'écart, sous la bande de 2 000 $."""
+    item = plan({"A": LONG}, holding(95.0), rebalance=MONTHLY)["A"]
+    assert item.note is PlanNote.HOLD
+    assert item.order is None
+
+
+def test_rebalance_closes_a_zero_weight_even_within_the_band() -> None:
+    order = plan({"A": FLAT}, holding(5.0), rebalance=MONTHLY)["A"].order
+    assert order.side is OrderSide.SELL
+    assert order.quantity == 5.0
+
+
+def test_rebalance_needs_a_price_to_resize() -> None:
+    assert plan({"A": LONG}, holding(50.0), prices={}, rebalance=MONTHLY)["A"].note is (
+        PlanNote.NO_PRICE
+    )
+
+
+def test_plan_item_signal_follows_its_target() -> None:
+    assert PlanItem("A", None, PlanNote.MISSING_DATA).signal is None
+    assert PlanItem("A", 0.0, PlanNote.HOLD).signal == FLAT
+    assert PlanItem("A", 0.15, PlanNote.HOLD).signal == LONG
 
 
 def make_broker(client: FakeClient) -> Broker:
@@ -195,6 +246,7 @@ def test_submit_returns_broker_report() -> None:
     assert report.broker_order_id is not None
 
 
+@pytest.mark.scenario("duplicate_order")
 def test_submit_duplicate_returns_existing_order_without_second_order() -> None:
     client = FakeClient()
     broker = make_broker(client)
@@ -204,6 +256,7 @@ def test_submit_duplicate_returns_existing_order_without_second_order() -> None:
     assert len(client.submitted) == 1
 
 
+@pytest.mark.scenario("order_rejected")
 def test_submit_refusal_is_reported_not_raised() -> None:
     client = FakeClient()
     client.submit_error = api_error(403)
@@ -221,6 +274,7 @@ def test_submit_server_error_is_raised_as_unknown(status_code: int) -> None:
         make_broker(client).submit("A", OrderSide.BUY, 2.0, "id-1")
 
 
+@pytest.mark.scenario("api_down")
 def test_submit_retries_rate_limit_with_same_identifier() -> None:
     client = FakeClient()
     calls: list[str] = []
