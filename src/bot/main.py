@@ -1,12 +1,14 @@
 """Boucle principale du bot, en paper trading uniquement."""
 
 import argparse
+import math
 import sqlite3
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -34,12 +36,14 @@ from bot.data.market import (
 from bot.execution.broker import (
     Broker,
     BrokerError,
+    MarketClock,
     make_client_order_id,
 )
 from bot.execution.client import AccountDataError, PaperModeError, create_trading_client
 from bot.execution.planner import PlanItem, PlanNote, plan_orders
-from bot.journal.store import STATUS_NOT_FOUND, Decision, Journal
+from bot.journal.store import STATUS_NOT_FOUND, Decision, EquityPoint, Journal
 from bot.logs import configure_logging
+from bot.power import keep_awake
 from bot.risk.checks import closing_orders
 from bot.risk.manager import RiskManager
 from bot.risk.models import (
@@ -112,21 +116,29 @@ class TradingBot:
                 f"Poids de {strategy.max_weight:.4f} supérieur à la limite par position"
             )
 
-    def tick(self, now: datetime) -> None:
-        """Exécute une itération : kill switch, suivi des ordres puis décisions de la séance."""
+    def tick(self, now: datetime) -> MarketClock:
+        """Exécute une itération : kill switch, suivi des ordres puis décisions de la séance.
+
+        Retourne l'horloge lue au début de l'itération.
+        """
         clock = self._broker.clock()
-        self._risk.update(self._broker.account_summary(), now)
+        account = self._broker.account()
+        equity = float(account.equity)
+        self._risk.update(PortfolioState(equity, float(account.last_equity)), now)
+        session = now.astimezone(ZoneInfo(EXCHANGE_TIMEZONE)).date()
+        if clock.is_open and math.isfinite(equity) and equity > 0:
+            # Relevé quotidien du capital, pour comparer le paper au backtest sur la même période.
+            self._journal.record_equity(EquityPoint(session, equity, float(account.cash), now))
         if self._risk.is_halted:
             self._liquidate(now)
-            return
+            return clock
 
         self._reconcile()
-        session = now.astimezone(ZoneInfo(EXCHANGE_TIMEZONE)).date()
         if not self._dry_run and self._journal.is_cycle_completed(session):
-            return
+            return clock
         if not clock.is_open and not self._dry_run:
             logger.info("market_closed")
-            return
+            return clock
         # Comme le backtest, une stratégie rééquilibrée ne décide qu'une fois par mois : à la
         # première séance du mois où le bot tourne.
         if (
@@ -135,8 +147,9 @@ class TradingBot:
             and self._journal.has_completed_cycle_in_month(session)
         ):
             logger.info("not_a_rebalance_session")
-            return
+            return clock
         self._trade(now, session)
+        return clock
 
     @property
     def is_halted(self) -> bool:
@@ -367,16 +380,19 @@ class TradingBot:
             self._sleep(1.0)
         logger.error("open_orders_remaining")
 
-    def run(self, *, once: bool, now: Callable[[], datetime]) -> int:
+    def run(self, *, once: bool, now: Callable[[], datetime], until_close: bool = False) -> int:
         """Répète les itérations et retourne le code de sortie du processus.
 
         Une panne de l'API est retentée à l'itération suivante, puis arrête le bot après trop
         d'échecs consécutifs. Pendant une panne, le kill switch ne peut pas lire le capital.
+        Avec `until_close`, le bot s'arrête une fois la séance du jour terminée, ou tout de suite
+        s'il n'y a pas de séance aujourd'hui : c'est le mode des lancements planifiés.
         """
         failures = 0
         while True:
+            session_over = False
             try:
-                self.tick(now())
+                session_over = self.tick(now()).is_session_over
                 failures = 0
             except RECOVERABLE_ERRORS as exc:
                 failures += 1
@@ -387,6 +403,9 @@ class TradingBot:
                 logger.error("bot_stopped_by_kill_switch")
                 return EXIT_HALTED
             if once:
+                return EXIT_OK
+            if until_close and session_over:
+                logger.info("session_over")
                 return EXIT_OK
             self._sleep(float(self._config.live.poll_interval_seconds))
 
@@ -408,6 +427,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="une seule itération, sans envoi d'ordre et sans modifier l'état réel du risque",
     )
     parser.add_argument(
+        "--until-close",
+        action="store_true",
+        help="s'arrête après la séance du jour, ou aussitôt sans séance (tâche planifiée)",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
+        help="dossier des fichiers de log, relatif à la racine du projet (défaut : live.log_dir)",
+    )
+    parser.add_argument(
         "--reset-kill-switch",
         action="store_true",
         help="réarme le kill switch après une décision humaine, puis s'arrête",
@@ -418,6 +448,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     journal = None
     try:
         config = load_strategy_config()
+        log_dir = PROJECT_ROOT / (args.log_dir or config.live.log_dir)
+        today = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIMEZONE)).date()
+        configure_logging(log_dir / f"bot-{today.isoformat()}.jsonl")
         settings = load_settings()
         trading_client = create_trading_client(settings)
         broker = Broker(trading_client, config.api_retry)
@@ -446,7 +479,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             journal,
             dry_run=args.dry_run,
         )
-        return bot.run(once=args.once or args.dry_run, now=lambda: datetime.now(UTC))
+        once = args.once or args.dry_run
+        # La veille du PC est empêchée pendant une séance planifiée, pas pendant un essai.
+        with keep_awake(enabled=args.until_close and not once):
+            return bot.run(once=once, now=lambda: datetime.now(UTC), until_close=args.until_close)
     except KeyboardInterrupt:
         logger.info("bot_interrupted")
         return EXIT_OK

@@ -196,6 +196,7 @@ class LiveConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     journal_file: str = Field(min_length=1)
+    log_dir: str = Field(min_length=1)
     poll_interval_seconds: int = Field(gt=0)
     max_consecutive_errors: int = Field(gt=0)
     signal_lookback_days: int = Field(gt=0)

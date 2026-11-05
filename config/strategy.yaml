@@ -116,10 +116,13 @@ targets:
 
 live:
   journal_file: data/journal.db
+  # Un fichier de log JSON par jour, bot-AAAA-MM-JJ.jsonl. Relatif à la racine, non commité.
+  log_dir: logs
   poll_interval_seconds: 60
   # Pannes d'API consécutives avant arrêt du bot.
   max_consecutive_errors: 5
-  # Jours calendaires à charger pour calculer le signal. Doit couvrir slow_window séances.
+  # Jours calendaires à charger pour calculer le signal. Doit couvrir le préchauffage de la
+  # stratégie (201 séances pour V1, soit environ 290 jours calendaires).
   signal_lookback_days: 400
   # Prix de référence des ordres. L'abonnement gratuit ne donne le temps réel que sur IEX.
   price_feed: iex

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from http import HTTPStatus
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from alpaca.common.exceptions import APIError
 from alpaca.common.types import RawData
@@ -16,6 +17,7 @@ from alpaca.trading.models import Position as AlpacaPosition
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest, OrderRequest
 
 from bot.config import RetryConfig
+from bot.data.market import EXCHANGE_TIMEZONE
 from bot.execution.client import AccountClient, AccountSnapshot, read_account
 from bot.retry import with_backoff
 from bot.risk.models import OrderSide, PortfolioState, Position
@@ -72,6 +74,19 @@ class MarketClock:
 
     is_open: bool
     timestamp: datetime
+    next_open: datetime
+    next_close: datetime
+
+    @property
+    def is_session_over(self) -> bool:
+        """Indique si la séance du jour est terminée, ou s'il n'y en a pas aujourd'hui.
+
+        Avant l'ouverture, la prochaine ouverture tombe le jour même : la séance reste à venir.
+        Les jours fériés et les changements d'heure viennent ainsi de l'horloge d'Alpaca.
+        """
+        exchange = ZoneInfo(EXCHANGE_TIMEZONE)
+        today = self.timestamp.astimezone(exchange).date()
+        return not self.is_open and self.next_open.astimezone(exchange).date() > today
 
 
 @dataclass(frozen=True)
@@ -133,7 +148,7 @@ class Broker:
         clock = with_backoff(self._client.get_clock, self._retry)
         if not isinstance(clock, Clock):
             raise BrokerError("Réponse brute reçue au lieu de l'horloge")
-        return MarketClock(clock.is_open, clock.timestamp)
+        return MarketClock(clock.is_open, clock.timestamp, clock.next_open, clock.next_close)
 
     def account(self) -> AccountSnapshot:
         """Retourne l'état du compte."""

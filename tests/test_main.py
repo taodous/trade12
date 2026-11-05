@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -38,7 +38,8 @@ from bot.config import (
 )
 from bot.data.market import DataFetchError, LatestPrice, Session
 from bot.execution.broker import REJECTED_BY_BROKER, Broker
-from bot.journal.store import STATUS_NOT_FOUND, Journal
+from bot.journal.store import STATUS_NOT_FOUND, EquityPoint, Journal
+from bot.logs import configure_logging
 from bot.main import EXIT_ERROR, EXIT_HALTED, EXIT_OK, STATUS_DRY_RUN, STATUS_UNKNOWN, TradingBot
 from bot.risk.manager import RiskManager
 from bot.risk.models import HaltReason
@@ -120,11 +121,17 @@ class FakeClient:
         self.submit_error: Exception | None = None
         self.submit_reaches_broker = False
         self.clock_error: Exception | None = None
+        self.next_open = NOW
 
     def get_clock(self) -> Clock | RawData:
         if self.clock_error is not None:
             raise self.clock_error
-        return Clock(timestamp=self.clock_time, is_open=self.is_open, next_open=NOW, next_close=NOW)
+        return Clock(
+            timestamp=self.clock_time,
+            is_open=self.is_open,
+            next_open=self.next_open,
+            next_close=NOW,
+        )
 
     def get_account(self) -> TradeAccount | RawData:
         return TradeAccount(
@@ -898,3 +905,105 @@ def test_main_refuses_corrupt_risk_state(monkeypatch: pytest.MonkeyPatch, tmp_pa
     state_path.write_text("corrompu")
     assert main_module.main(["--once"]) == EXIT_ERROR
     assert client.submitted == []
+
+
+@pytest.fixture
+def restore_logging() -> Iterator[None]:
+    """`main` écrit ses logs dans un fichier : la configuration console est rétablie ensuite."""
+    yield
+    configure_logging()
+
+
+def test_main_writes_a_daily_log_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, restore_logging: None
+) -> None:
+    client = FakeClient()
+    client.is_open = False
+    wire_main(monkeypatch, tmp_path, client)
+    assert main_module.main(["--once"]) == EXIT_OK
+    files = list((tmp_path / make_config().live.log_dir).glob("bot-*.jsonl"))
+    assert len(files) == 1
+    events = [json.loads(line)["event"] for line in files[0].read_text("utf-8").splitlines()]
+    assert "market_closed" in events
+
+
+def test_main_until_close_stops_without_session_today(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, restore_logging: None
+) -> None:
+    client = FakeClient()
+    client.is_open = False
+    client.next_open = NOW + timedelta(days=3)
+    wire_main(monkeypatch, tmp_path, client)
+    assert main_module.main(["--until-close", "--log-dir", "autres"]) == EXIT_OK
+    assert list((tmp_path / "autres").glob("bot-*.jsonl"))
+    assert client.submitted == []
+
+
+OPENING = datetime(2026, 11, 3, 14, 30, tzinfo=UTC)
+
+
+def test_until_close_waits_for_open_trades_then_stops_after_close(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path)
+    client = harness.client
+    # Avant l'ouverture, puis pendant la séance, puis après la clôture.
+    states = iter([(False, OPENING), (True, OPENING), (False, OPENING + timedelta(days=1))])
+
+    def now() -> datetime:
+        client.is_open, client.next_open = next(states)
+        return NOW
+
+    assert harness.bot.run(once=False, now=now, until_close=True) == EXIT_OK
+    assert client.submitted_symbols() == SYMBOLS
+    assert harness.naps == [60.0, 60.0]
+
+
+def test_until_close_stops_at_once_on_a_holiday(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path)
+    harness.client.is_open = False
+    harness.client.next_open = NOW + timedelta(days=1)
+    assert harness.bot.run(once=False, now=lambda: NOW, until_close=True) == EXIT_OK
+    assert harness.client.submitted == []
+    assert harness.naps == []
+
+
+def test_until_close_keeps_trying_after_an_api_failure(tmp_path: Path) -> None:
+    """Une panne ne dit rien de l'horloge : le bot ne doit pas croire la séance terminée."""
+    harness = make_harness(tmp_path)
+    harness.client.clock_error = api_error(500)
+    instants = iter([NOW, NOW])
+
+    def now() -> datetime:
+        instant = next(instants)
+        if harness.naps:
+            harness.client.clock_error = None
+            harness.client.is_open = False
+            harness.client.next_open = NOW + timedelta(days=1)
+        return instant
+
+    assert harness.bot.run(once=False, now=now, until_close=True) == EXIT_OK
+    assert harness.naps == [60.0]
+
+
+def test_until_close_still_reports_the_kill_switch(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path)
+    harness.client.equity = "97000"
+    harness.client.is_open = False
+    harness.client.next_open = NOW + timedelta(days=1)
+    assert harness.bot.run(once=False, now=lambda: NOW, until_close=True) == EXIT_HALTED
+
+
+def test_equity_is_recorded_once_per_open_session(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path)
+    harness.bot.tick(NOW)
+    harness.client.equity = "101000"
+    harness.bot.tick(NOW + timedelta(minutes=1))
+    assert harness.journal.equity_history() == [
+        EquityPoint(TODAY, 101_000.0, 101_000.0, NOW + timedelta(minutes=1))
+    ]
+
+
+def test_equity_is_not_recorded_when_market_is_closed(tmp_path: Path) -> None:
+    harness = make_harness(tmp_path)
+    harness.client.is_open = False
+    harness.bot.tick(NOW)
+    assert harness.journal.equity_history() == []

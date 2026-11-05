@@ -23,6 +23,9 @@ htmlcov/
 reports/*
 !reports/.gitkeep
 
+# Logs du bot
+/logs/
+
 # Journal SQLite et données de marché locales
 *.db
 *.sqlite

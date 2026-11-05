@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS cycles (
     session TEXT PRIMARY KEY,
     completed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS equity (
+    session TEXT PRIMARY KEY,
+    equity REAL NOT NULL,
+    cash REAL NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 """
 STATUS_NOT_FOUND = "not_found"
 
@@ -67,6 +73,21 @@ class Decision:
 
 
 @dataclass(frozen=True)
+class EquityPoint:
+    """Capital et cash d'une séance, relevés pendant qu'elle était ouverte."""
+
+    session: date
+    equity: float
+    cash: float
+    recorded_at: datetime
+
+    @property
+    def exposure(self) -> float:
+        """Part du capital investie, sans vente à découvert."""
+        return 1.0 - self.cash / self.equity
+
+
+@dataclass(frozen=True)
 class PendingOrder:
     """Ordre envoyé dont l'issue n'est pas encore connue."""
 
@@ -85,12 +106,20 @@ def observed_slippage(side: OrderSide, reference_price: float, filled_price: flo
 class Journal:
     """Enregistre les décisions et le sort des ordres."""
 
-    def __init__(self, path: Path) -> None:
-        """Ouvre le journal et crée ses tables si besoin."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path)
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+        """Ouvre le journal et crée ses tables si besoin.
+
+        En lecture seule, le journal doit exister et aucune écriture n'est possible : c'est le mode
+        des outils de suivi, qui ne doivent jamais modifier ce que le bot a enregistré.
+        """
+        if read_only:
+            self._connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(path)
         self._connection.row_factory = sqlite3.Row
-        self._connection.executescript(_SCHEMA)
+        if not read_only:
+            self._connection.executescript(_SCHEMA)
 
     def close(self) -> None:
         """Ferme le journal."""
@@ -193,6 +222,11 @@ class Journal:
         ).fetchone()
         return row is not None
 
+    def last_completed_cycle(self) -> date | None:
+        """Retourne la dernière séance traitée, ou None si aucune ne l'a été."""
+        row = self._connection.execute("SELECT MAX(session) AS last FROM cycles").fetchone()
+        return date.fromisoformat(row["last"]) if row["last"] else None
+
     def complete_cycle(self, session: date, completed_at: datetime) -> None:
         """Marque les décisions de cette séance comme prises."""
         with self._connection:
@@ -200,6 +234,33 @@ class Journal:
                 "INSERT OR REPLACE INTO cycles (session, completed_at) VALUES (?, ?)",
                 (session.isoformat(), completed_at.isoformat()),
             )
+
+    def record_equity(self, point: EquityPoint) -> None:
+        """Enregistre le capital de la séance. Le dernier relevé de la séance l'emporte."""
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO equity (session, equity, cash, recorded_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    point.session.isoformat(),
+                    point.equity,
+                    point.cash,
+                    point.recorded_at.isoformat(),
+                ),
+            )
+
+    def equity_history(self) -> list[EquityPoint]:
+        """Retourne le capital de chaque séance, de la plus ancienne à la plus récente."""
+        rows = self._connection.execute("SELECT * FROM equity ORDER BY session").fetchall()
+        return [
+            EquityPoint(
+                date.fromisoformat(row["session"]),
+                row["equity"],
+                row["cash"],
+                datetime.fromisoformat(row["recorded_at"]),
+            )
+            for row in rows
+        ]
 
     def decisions(self) -> list[dict[str, Any]]:
         """Retourne toutes les décisions, de la plus ancienne à la plus récente."""
