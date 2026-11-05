@@ -58,6 +58,7 @@ from bot.config import (
 )
 from bot.data.store import StoreError
 from bot.logs import configure_logging
+from bot.strategy.factory import rebalance_policy
 
 logger = structlog.get_logger()
 
@@ -414,6 +415,13 @@ def build_limits(
         if out_of_sample
         else "Out-of-sample non ouvert : aucun objectif n'est encore mesuré hors échantillon."
     )
+    rebalance = rebalance_policy(config.strategy)
+    rebalancing = (
+        "aucun rééquilibrage"
+        if rebalance is None
+        else f"rééquilibrage {rebalance.frequency} complet, sans la bande de "
+        f"{rebalance.band_pct:.0%} du paper (plus de frais, donc prudent)"
+    )
     return [
         f"Période in-sample du {in_sample.start} au {in_sample.end}, soit "
         f"{in_sample.strategy.sessions} séances. Une seule période historique, un seul régime "
@@ -426,8 +434,8 @@ def build_limits(
         f"Univers de {len(config.data.symbols)} ETF choisi en 2026 : ce sont des ETF qui ont "
         "survécu jusqu'à aujourd'hui (biais du survivant, limité pour des ETF aussi larges).",
         "Modèle de backtest : exécution à l'ouverture avec un slippage fixe, cash non rémunéré, "
-        "ni kill switch ni contrôles du module risque appliqués, pas de rééquilibrage. Le "
-        "Sharpe est calculé avec un taux sans risque nul.",
+        f"ni kill switch ni contrôles du module risque appliqués, {rebalancing}. Le Sharpe est "
+        "calculé avec un taux sans risque nul.",
         "Paper trading : les exécutions d'Alpaca sont simulées et sous-estiment le slippage "
         "réel. Les prix temps réel viennent du flux IEX, qui ne couvre qu'une partie du marché.",
         f"Écart d'exécution mesuré sur {execution.fills} exécutions paper. La comparaison "
