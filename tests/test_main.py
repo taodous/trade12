@@ -23,9 +23,14 @@ from alpaca.trading.enums import (
     TimeInForce,
 )
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
-from alpaca.trading.models import Clock, Order, TradeAccount
+from alpaca.trading.models import Clock, Order, PortfolioHistory, TradeAccount
 from alpaca.trading.models import Position as AlpacaPosition
-from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest, OrderRequest
+from alpaca.trading.requests import (
+    GetOrdersRequest,
+    GetPortfolioHistoryRequest,
+    MarketOrderRequest,
+    OrderRequest,
+)
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from bot import main as main_module
@@ -122,6 +127,9 @@ class FakeClient:
         self.submit_reaches_broker = False
         self.clock_error: Exception | None = None
         self.next_open = NOW
+        # Historique du capital renvoyé par get_portfolio_history, par timeframe.
+        self.history: dict[str, PortfolioHistory] = {}
+        self.history_requests: list[GetPortfolioHistoryRequest] = []
 
     def get_clock(self) -> Clock | RawData:
         if self.clock_error is not None:
@@ -183,6 +191,18 @@ class FakeClient:
         self.cancel_calls += 1
         self.open_orders = []
         return []
+
+    def get_portfolio_history(
+        self, history_filter: GetPortfolioHistoryRequest | None = None
+    ) -> PortfolioHistory | RawData:
+        assert history_filter is not None and history_filter.timeframe is not None
+        self.history_requests.append(history_filter)
+        return self.history.get(
+            history_filter.timeframe,
+            PortfolioHistory(
+                timestamp=[], equity=[], profit_loss=[], profit_loss_pct=[], timeframe="1D"
+            ),
+        )
 
     def submitted_symbols(self) -> list[str]:
         return [str(order.symbol) for order in self.submitted]

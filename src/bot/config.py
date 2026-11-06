@@ -204,6 +204,22 @@ class LiveConfig(BaseModel):
     cancel_wait_seconds: int = Field(ge=0)
 
 
+class DashboardConfig(BaseModel):
+    """Paramètres du dashboard de suivi, en lecture seule."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    refresh_seconds: int = Field(gt=0)
+    history_cache_seconds: int = Field(gt=0)
+    recent_decisions: int = Field(gt=0)
+    intraday_timeframe: Literal["1Min", "5Min", "15Min", "1H"]
+    # Le bot est vu actif si son dernier log date de moins de ce nombre d'intervalles de tick.
+    heartbeat_intervals: int = Field(gt=0)
+    port: int = Field(gt=0, lt=65536)
+    # En dessous, les métriques annualisées sont affichées avec un avertissement.
+    min_sessions_for_metrics: int = Field(gt=1)
+
+
 class WalkForwardConfig(BaseModel):
     """Fenêtres glissantes du walk-forward, en séances."""
 
@@ -381,6 +397,7 @@ class StrategyConfig(BaseModel):
     backtest: BacktestConfig
     targets: PerformanceTargets
     live: LiveConfig
+    dashboard: DashboardConfig
     api_retry: RetryConfig
     audit: AuditConfig
 

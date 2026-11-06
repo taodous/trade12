@@ -1,0 +1,16 @@
+# Configuration Streamlit du dashboard (python -m bot.dashboard).
+# Local uniquement et sans télémétrie : le dashboard lit un compte de trading.
+
+[server]
+address = "localhost"
+headless = true
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"

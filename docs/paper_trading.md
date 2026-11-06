@@ -43,6 +43,7 @@ Conditions côté PC :
 - **Session ouverte.** Le PC doit rester allumé, ou en veille, mais pas éteint, et ta session Windows doit être ouverte. Elle peut être verrouillée.
 - **Réveil.** La tâche réveille le PC s'il dort. Il faut que les « minuteurs de réveil » soient autorisés : Options d'alimentation, puis Paramètres avancés, puis Veille, puis Autoriser les minuteurs de réveil.
 - **Pas de veille pendant la séance.** Le bot l'empêche lui-même, l'écran peut s'éteindre.
+- **Aucune fenêtre.** La tâche tourne sans fenêtre console, pour qu'on ne puisse pas la fermer par erreur : fermer cette fenêtre arrêtait le bot. Pour vérifier qu'il tourne, utilise le dashboard ou `Get-ScheduledTask TradeBotPaper` (état `Running`).
 - **Lancement manqué ou redémarrage.** Si le PC était éteint à 14h15, ou s'il a été éteint ou redémarré pendant la séance, la tâche repart à l'ouverture de ta session. Le bot reprend alors la séance en cours. Un week-end ou après la clôture, il s'arrête aussitôt.
 - **Batterie.** Sur batterie, Windows n'autorise pas les minuteurs de réveil par défaut. Laisse le PC branché.
 
@@ -56,6 +57,33 @@ Get-ScheduledTaskInfo TradeBotPaper   # LastTaskResult : 0 = normal, 2 = kill sw
 Hors séance, le bot s'arrête en quelques secondes et écrit son fichier de log.
 
 ## 4. Suivre
+
+### Dashboard
+
+```bash
+uv run python -m bot.dashboard
+```
+
+Le dashboard s'ouvre dans le navigateur sur http://localhost:8501. On peut le lancer et le fermer (Ctrl+C) à tout moment : il est indépendant du bot, en lecture seule, et n'envoie aucun ordre. Il n'écoute que sur ce PC.
+
+**Partie live, rafraîchie toutes les 15 s :**
+- le capital, la variation du jour, l'exposition, le cash et le drawdown ;
+- l'état du bot, actif ou arrêté, d'après son dernier signe de vie, et l'état du marché ;
+- le kill switch, avec une jauge pour la perte du jour face à 2 % et une pour le drawdown face à 10 ;
+- quatre onglets :
+  - **Aujourd'hui** : le capital de la séance en intraday ;
+  - **Positions** : P&L latent, poids réel et poids visé ;
+  - **Décisions** : les 50 dernières, avec la décision du risque et le slippage ;
+  - **Logs** : erreurs et avertissements.
+
+**Performance depuis le début, rafraîchie toutes les 5 min :**
+- la courbe du capital face à SPY, avec le même capital de départ ;
+- le drawdown, avec le seuil d'arrêt ;
+- les métriques face à SPY et aux cibles de CLAUDE.md.
+
+Tant qu'il y a moins de 63 séances (3 mois), un avertissement rappelle que les chiffres annualisés ne sont pas significatifs.
+
+### En ligne de commande
 
 ```bash
 uv run python -m bot.status

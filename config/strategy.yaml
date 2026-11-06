@@ -129,6 +129,19 @@ live:
   # Attente maximale de l'annulation des ordres ouverts avant les fermetures du kill switch.
   cancel_wait_seconds: 10
 
+# Dashboard de suivi (python -m bot.dashboard), en lecture seule, sur localhost uniquement.
+dashboard:
+  # Rafraîchissement des sections live : environ 4 appels API par rafraîchissement.
+  refresh_seconds: 15
+  # Historique du capital et barres de SPY, qui ne changent qu'une fois par jour.
+  history_cache_seconds: 300
+  recent_decisions: 50
+  intraday_timeframe: 5Min
+  heartbeat_intervals: 3
+  port: 8501
+  # Environ 3 mois de séances, la durée minimale du paper de l'étape 9.
+  min_sessions_for_metrics: 63
+
 api_retry:
   # Backoff exponentiel sur erreur 429.
   max_attempts: 5

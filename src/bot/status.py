@@ -12,7 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -23,11 +23,12 @@ from bot.config import (
     PROJECT_ROOT,
     ConfigError,
     RiskLimits,
+    StrategyConfig,
     load_settings,
     load_strategy_config,
 )
-from bot.data.market import EXCHANGE_TIMEZONE, DataFetchError, fetch_sessions
-from bot.execution.broker import Broker, BrokerError
+from bot.data.market import EXCHANGE_TIMEZONE, CalendarClient, DataFetchError, fetch_sessions
+from bot.execution.broker import Broker, BrokerClient, BrokerError
 from bot.execution.client import AccountDataError, PaperModeError, create_trading_client
 from bot.journal.store import Journal
 from bot.logs import configure_logging
@@ -292,10 +293,12 @@ def _read_journal(path: Path) -> tuple[list[dict[str, Any]], date | None, list[d
         journal.close()
 
 
-def collect_status(now: datetime) -> BotStatus:
+class StatusClient(BrokerClient, CalendarClient, Protocol):
+    """Partie de l'API de trading lue par le suivi : compte, positions et calendrier."""
+
+
+def build_status(config: StrategyConfig, trading_client: StatusClient, now: datetime) -> BotStatus:
     """Lit le compte paper, l'état du risque, le journal et les logs, sans rien modifier."""
-    config = load_strategy_config()
-    trading_client = create_trading_client(load_settings())
     broker = Broker(trading_client, config.api_retry)
     account = broker.account()
     positions = broker.positions()
@@ -330,6 +333,11 @@ def collect_status(now: datetime) -> BotStatus:
         log=summarize_log(PROJECT_ROOT / config.live.log_dir),
         notes=[] if account.can_trade else ["le compte ne peut pas trader"],
     )
+
+
+def collect_status(now: datetime) -> BotStatus:
+    """Charge la configuration et le client paper, puis lit l'état du bot."""
+    return build_status(load_strategy_config(), create_trading_client(load_settings()), now)
 
 
 def main() -> int:

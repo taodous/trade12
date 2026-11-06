@@ -3,7 +3,7 @@
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from http import HTTPStatus
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -12,9 +12,14 @@ from alpaca.common.exceptions import APIError
 from alpaca.common.types import RawData
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import OrderStatus, PositionSide, QueryOrderStatus, TimeInForce
-from alpaca.trading.models import Clock, Order
+from alpaca.trading.models import Clock, Order, PortfolioHistory
 from alpaca.trading.models import Position as AlpacaPosition
-from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest, OrderRequest
+from alpaca.trading.requests import (
+    GetOrdersRequest,
+    GetPortfolioHistoryRequest,
+    MarketOrderRequest,
+    OrderRequest,
+)
 
 from bot.config import RetryConfig
 from bot.data.market import EXCHANGE_TIMEZONE
@@ -67,6 +72,12 @@ class BrokerClient(AccountClient, Protocol):
         """Annule tous les ordres ouverts."""
         ...
 
+    def get_portfolio_history(
+        self, history_filter: GetPortfolioHistoryRequest | None = None
+    ) -> PortfolioHistory | RawData:
+        """Retourne l'historique du capital du compte."""
+        ...
+
 
 @dataclass(frozen=True)
 class MarketClock:
@@ -110,6 +121,28 @@ class OrderReport:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class PositionDetail:
+    """Position du compte, avec son prix de revient et son résultat latent, pour le suivi."""
+
+    symbol: str
+    quantity: float
+    avg_entry_price: float
+    current_price: float
+    market_value: float
+    unrealized_pl: float
+    unrealized_plpc: float
+    change_today: float
+
+
+@dataclass(frozen=True)
+class EquitySample:
+    """Capital du compte à la fin d'une fenêtre de l'historique Alpaca."""
+
+    timestamp: datetime
+    equity: float
+
+
 def make_client_order_id(prefix: str, session: date, symbol: str, side: OrderSide) -> str:
     """Retourne un identifiant stable pour un ordre d'une séance.
 
@@ -121,6 +154,11 @@ def make_client_order_id(prefix: str, session: date, symbol: str, side: OrderSid
 
 def _to_float(value: str | float | None) -> float:
     return float(value) if value is not None else 0.0
+
+
+def _or_nan(value: str | float | None) -> float:
+    """Une valeur absente reste inconnue : NaN, et non 0, pour ne pas fausser un poids."""
+    return float(value) if value is not None else math.nan
 
 
 def _report(order: Order) -> OrderReport:
@@ -254,6 +292,44 @@ class Broker:
         if not isinstance(order, Order):
             raise BrokerError("Réponse brute reçue au lieu de l'ordre")
         return _report(order)
+
+    def position_details(self) -> list[PositionDetail]:
+        """Retourne les positions avec leur prix de revient et leur résultat latent."""
+        positions = with_backoff(self._client.get_all_positions, self._retry)
+        if isinstance(positions, dict):
+            raise BrokerError("Réponse brute reçue au lieu des positions")
+        details = []
+        for position in positions:
+            quantity = abs(float(position.qty))
+            if position.side is PositionSide.SHORT:
+                quantity = -quantity
+            details.append(
+                PositionDetail(
+                    symbol=position.symbol,
+                    quantity=quantity,
+                    avg_entry_price=float(position.avg_entry_price),
+                    current_price=_or_nan(position.current_price),
+                    market_value=_or_nan(position.market_value),
+                    unrealized_pl=_to_float(position.unrealized_pl),
+                    unrealized_plpc=_to_float(position.unrealized_plpc),
+                    change_today=_to_float(position.change_today),
+                )
+            )
+        return sorted(details, key=lambda detail: detail.symbol)
+
+    def portfolio_history(self, request: GetPortfolioHistoryRequest) -> list[EquitySample]:
+        """Retourne l'historique du capital, sans les fenêtres où il est inconnu ou nul.
+
+        Alpaca renvoie 0 pour les jours qui précèdent le financement du compte.
+        """
+        history = with_backoff(lambda: self._client.get_portfolio_history(request), self._retry)
+        if not isinstance(history, PortfolioHistory):
+            raise BrokerError("Réponse brute reçue au lieu de l'historique du capital")
+        return [
+            EquitySample(datetime.fromtimestamp(timestamp, UTC), float(equity))
+            for timestamp, equity in zip(history.timestamp, history.equity, strict=True)
+            if math.isfinite(equity) and equity > 0
+        ]
 
     def cancel_all(self) -> None:
         """Demande l'annulation de tous les ordres ouverts."""

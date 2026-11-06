@@ -23,7 +23,9 @@ New-Item -ItemType Directory -Force $logs | Out-Null
 # Les logs JSON vont dans logs\bot-AAAA-MM-JJ.jsonl (écrits par le bot). La sortie console est
 # jetée, sauf les erreurs Python non prévues, gardées dans logs\stderr.log.
 $command = "set PYTHONUTF8=1&& `"$uv`" run python -m bot.main --until-close 1>NUL 2>>`"$logs\stderr.log`""
-$action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/d /c `"$command`"" -WorkingDirectory $root
+# conhost --headless : aucune fenêtre console. Une fenêtre visible se ferme trop facilement, et
+# la fermer arrête le bot en pleine séance (constaté le 2026-11-06).
+$action = New-ScheduledTaskAction -Execute "conhost.exe" -Argument "--headless cmd.exe /d /c `"$command`"" -WorkingDirectory $root
 $user = "$env:USERDOMAIN\$env:USERNAME"
 $daily = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $StartTime
 # Après un arrêt ou un redémarrage du PC en pleine séance, l'ouverture de session relance le bot,
