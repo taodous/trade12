@@ -66,7 +66,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["bot.strategy", "bot.risk", "bot.execution", "bot.data", "bot.retry", "bot.dashboard", "audit"]
+source = ["bot.strategy", "bot.risk", "bot.execution", "bot.data", "bot.retry", "bot.dashboard", "bot.alerts", "bot.heartbeat", "bot.watchdog", "audit"]
 branch = true
 
 [tool.coverage.report]

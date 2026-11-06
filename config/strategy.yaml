@@ -142,6 +142,17 @@ dashboard:
   # Environ 3 mois de séances, la durée minimale du paper de l'étape 9.
   min_sessions_for_metrics: 63
 
+# Alertes (bot.alerts). Le canal du téléphone, NTFY_TOPIC, est un secret lu dans .env : sans lui,
+# seules les notifications Windows partent.
+alerts:
+  windows_toast: true
+  ntfy_server: https://ntfy.sh
+  timeout_seconds: 10.0
+  # Un ordre refusé par le module risque mérite toujours un coup d'oeil.
+  notify_rejections: true
+  # Un résumé à chaque rééquilibrage, une fois par mois.
+  notify_rebalance: true
+
 api_retry:
   # Backoff exponentiel sur erreur 429.
   max_attempts: 5

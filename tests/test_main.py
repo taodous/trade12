@@ -34,6 +34,7 @@ from alpaca.trading.requests import (
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from bot import main as main_module
+from bot.alerts import Alert, Alerter, Severity
 from bot.config import (
     ConfigError,
     MovingAverageParams,
@@ -309,6 +310,7 @@ def make_harness(
     client: FakeClient | None = None,
     market: FakeMarket | None = None,
     state: RiskState | None = None,
+    alerter: Alerter | None = None,
 ) -> Harness:
     config = config or make_config()
     client = client or FakeClient()
@@ -326,6 +328,7 @@ def make_harness(
         journal,
         dry_run=dry_run,
         sleep=naps.append,
+        alerter=alerter,
     )
     return Harness(client, market, strategy, journal, store, bot, naps)
 
@@ -1027,3 +1030,94 @@ def test_equity_is_not_recorded_when_market_is_closed(tmp_path: Path) -> None:
     harness.client.is_open = False
     harness.bot.tick(NOW)
     assert harness.journal.equity_history() == []
+
+
+class AlertRecorder:
+    name = "test"
+
+    def __init__(self) -> None:
+        self.alerts: list[Alert] = []
+
+    def send(self, alert: Alert) -> None:
+        self.alerts.append(alert)
+
+
+def recording_harness(tmp_path: Path, **options: Any) -> tuple[Harness, AlertRecorder]:
+    recorder = AlertRecorder()
+    return make_harness(tmp_path, alerter=Alerter([recorder]), **options), recorder
+
+
+def test_rebalance_sends_one_summary_alert(tmp_path: Path) -> None:
+    harness, recorder = recording_harness(tmp_path)
+    harness.bot.tick(NOW)
+    assert [alert.severity for alert in recorder.alerts] == [Severity.INFO]
+    assert "5 ordres" in recorder.alerts[0].message
+    assert "buy 200 A" in recorder.alerts[0].message
+    harness.bot.tick(NOW + timedelta(minutes=1))
+    assert len(recorder.alerts) == 1
+
+
+def test_risk_rejections_are_grouped_in_one_warning(tmp_path: Path) -> None:
+    harness, recorder = recording_harness(tmp_path, market=FakeMarket(price_age=timedelta(hours=2)))
+    harness.bot.tick(NOW)
+    assert [alert.severity for alert in recorder.alerts] == [Severity.WARNING]
+    assert recorder.alerts[0].message.count("stale_data") == len(SYMBOLS)
+
+
+def test_cycle_alerts_follow_the_configuration(tmp_path: Path) -> None:
+    base = make_config()
+    quiet = base.model_copy(
+        update={
+            "alerts": base.alerts.model_copy(
+                update={"notify_rebalance": False, "notify_rejections": False}
+            )
+        }
+    )
+    harness, recorder = recording_harness(tmp_path, config=quiet)
+    harness.bot.tick(NOW)
+    assert recorder.alerts == []
+
+
+def test_kill_switch_sends_a_critical_alert(tmp_path: Path) -> None:
+    harness, recorder = recording_harness(tmp_path)
+    harness.client.equity = "97000"
+    assert harness.bot.run(once=False, now=lambda: NOW) == EXIT_HALTED
+    assert recorder.alerts[-1].severity is Severity.CRITICAL
+    assert "daily_loss" in recorder.alerts[-1].message
+
+
+def test_repeated_api_failures_send_a_critical_alert(tmp_path: Path) -> None:
+    harness, recorder = recording_harness(tmp_path)
+    harness.client.clock_error = RequestsConnectionError("panne")
+    assert harness.bot.run(once=False, now=lambda: NOW) == EXIT_ERROR
+    assert [alert.title for alert in recorder.alerts] == ["Bot arrêté : API injoignable"]
+
+    harness, recorder = recording_harness(tmp_path / "once")
+    harness.client.clock_error = RequestsConnectionError("panne")
+    assert harness.bot.run(once=True, now=lambda: NOW) == EXIT_ERROR
+    assert recorder.alerts == []
+
+
+def test_main_alerts_when_startup_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, restore_logging: None
+) -> None:
+    recorder = AlertRecorder()
+    wire_main(monkeypatch, tmp_path, FakeClient())
+
+    def fail() -> None:
+        raise ConfigError("Clés API absentes")
+
+    monkeypatch.setattr(main_module, "load_settings", fail)
+    monkeypatch.setattr(main_module, "build_alerter", lambda *_: Alerter([recorder]))
+    assert main_module.main(["--once"]) == EXIT_ERROR
+    assert recorder.alerts[0].title == "Bot en échec"
+
+
+def test_dry_run_never_alerts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, restore_logging: None
+) -> None:
+    built: list[object] = []
+    wire_main(monkeypatch, tmp_path, FakeClient())
+    monkeypatch.setattr(main_module, "build_alerter", lambda *args: built.append(args))
+    main_module.main(["--dry-run"])
+    assert built == []

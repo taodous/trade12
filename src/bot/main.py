@@ -17,6 +17,7 @@ import structlog
 from alpaca.common.exceptions import APIError
 from requests.exceptions import RequestException
 
+from bot.alerts import Alert, Alerter, Severity, build_alerter
 from bot.config import (
     PROJECT_ROOT,
     ConfigError,
@@ -100,8 +101,12 @@ class TradingBot:
         *,
         dry_run: bool = False,
         sleep: Callable[[float], None] = time.sleep,
+        alerter: Alerter | None = None,
     ) -> None:
-        """Assemble le bot. Lève `ValueError` si le poids dépasse la limite par position."""
+        """Assemble le bot. Lève `ValueError` si le poids dépasse la limite par position.
+
+        Sans `alerter`, aucune alerte ne part : c'est le cas des simulations.
+        """
         self._config = config
         self._strategy = strategy
         self._broker = broker
@@ -111,6 +116,10 @@ class TradingBot:
         self._dry_run = dry_run
         self._sleep = sleep
         self._rebalance = rebalance_policy(config.strategy)
+        self._alerter = alerter or Alerter([])
+        # Ordres envoyés et refusés du cycle en cours, résumés en une alerte à la fin du cycle.
+        self._sent: list[str] = []
+        self._rejected: list[str] = []
         if strategy.max_weight > config.risk.max_position_pct:
             raise ValueError(
                 f"Poids de {strategy.max_weight:.4f} supérieur à la limite par position"
@@ -223,11 +232,13 @@ class TradingBot:
         items = plan_orders(targets, portfolio, open_symbols, prices, last.date, self._rebalance)
         context = RiskContext(decided_at, session, last.date)
 
+        self._sent, self._rejected = [], []
         for item in items:
             inputs = self._inputs(item.symbol, last.date, closes, snapshots, portfolio)
             inputs["target_weight"] = item.target
             portfolio = self._process(item, inputs, portfolio, snapshots, context)
 
+        self._alert_cycle(session)
         if self._risk.is_halted:
             return
         self._journal.complete_cycle(session, now)
@@ -299,9 +310,12 @@ class TradingBot:
                 reason=decision.reason.value if decision.reason else None,
                 detail=decision.detail,
             )
+            reason = decision.reason.value if decision.reason else "?"
+            self._rejected.append(f"{_order_label(order)} : {reason}")
             return portfolio
 
         self._send(decision_id, order.symbol, order.side, order.quantity, client_order_id)
+        self._sent.append(_order_label(order))
         # Le prochain ordre du cycle doit voir celui-ci, sinon l'exposition serait sous-estimée.
         price = snapshot.price if snapshot else 0.0
         return _with_pending(portfolio, order, price)
@@ -398,9 +412,12 @@ class TradingBot:
                 failures += 1
                 logger.error("tick_failed", error=type(exc).__name__, failures=failures)
                 if once or failures >= self._config.live.max_consecutive_errors:
+                    if not once:
+                        self._alert_failures(failures, exc)
                     return EXIT_ERROR
             if self.is_halted:
                 logger.error("bot_stopped_by_kill_switch")
+                self._alert_halt()
                 return EXIT_HALTED
             if once:
                 return EXIT_OK
@@ -408,6 +425,54 @@ class TradingBot:
                 logger.info("session_over")
                 return EXIT_OK
             self._sleep(float(self._config.live.poll_interval_seconds))
+
+    def _alert_cycle(self, session: date) -> None:
+        settings = self._config.alerts
+        if self._rejected and settings.notify_rejections:
+            self._alerter.send(
+                Alert(
+                    f"Ordres refusés par le risque ({session:%d/%m})",
+                    "\n".join(self._rejected),
+                    Severity.WARNING,
+                )
+            )
+        if self._sent and settings.notify_rebalance:
+            self._alerter.send(
+                Alert(
+                    f"Rééquilibrage du {session:%d/%m}",
+                    f"{len(self._sent)} ordres envoyés :\n" + "\n".join(self._sent),
+                    Severity.INFO,
+                )
+            )
+
+    def _alert_halt(self) -> None:
+        state = self._risk.state
+        reason = state.halt_reason.value if state.halt_reason else "?"
+        halted = f"{state.halted_at:%d/%m %H:%M} UTC" if state.halted_at else "?"
+        peak = f"{state.peak_equity:,.0f} $" if state.peak_equity else "?"
+        self._alerter.send(
+            Alert(
+                "Kill switch déclenché",
+                f"Motif : {reason}, le {halted}. Plus haut du capital : {peak}. Les positions "
+                "sont fermées et le bot refuse tout ordre. Reprise sur décision humaine : "
+                "bot.main --reset-kill-switch.",
+                Severity.CRITICAL,
+            )
+        )
+
+    def _alert_failures(self, failures: int, error: Exception) -> None:
+        self._alerter.send(
+            Alert(
+                "Bot arrêté : API injoignable",
+                f"{failures} pannes consécutives ({type(error).__name__}). Le kill switch n'est "
+                "plus surveillé tant que le bot ne repart pas.",
+                Severity.CRITICAL,
+            )
+        )
+
+
+def _order_label(order: ProposedOrder) -> str:
+    return f"{order.side.value} {order.quantity:g} {order.symbol}"
 
 
 def _with_pending(portfolio: PortfolioState, order: ProposedOrder, price: float) -> PortfolioState:
@@ -446,12 +511,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     configure_logging()
     journal = None
+    alerter = Alerter([])
     try:
         config = load_strategy_config()
+        # Le toast Windows marche même sans les clés : il signale alors l'échec du démarrage.
+        if not args.dry_run:
+            alerter = build_alerter(config.alerts, None)
         log_dir = PROJECT_ROOT / (args.log_dir or config.live.log_dir)
         today = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIMEZONE)).date()
         configure_logging(log_dir / f"bot-{today.isoformat()}.jsonl")
         settings = load_settings()
+        if not args.dry_run:
+            alerter = build_alerter(config.alerts, settings)
         trading_client = create_trading_client(settings)
         broker = Broker(trading_client, config.api_retry)
         state_store = JsonRiskStateStore(PROJECT_ROOT / config.risk_state_file)
@@ -478,6 +549,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             risk,
             journal,
             dry_run=args.dry_run,
+            alerter=alerter,
         )
         once = args.once or args.dry_run
         # La veille du PC est empêchée pendant une séance planifiée, pas pendant un essai.
@@ -496,6 +568,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         *RECOVERABLE_ERRORS,
     ) as exc:
         logger.error("bot_failed", error=type(exc).__name__, reason=str(exc))
+        alerter.send(
+            Alert(
+                "Bot en échec",
+                f"{type(exc).__name__} : {exc}. Le bot est arrêté, voir les logs du jour.",
+                Severity.CRITICAL,
+            )
+        )
         return EXIT_ERROR
     finally:
         if journal is not None:

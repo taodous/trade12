@@ -32,7 +32,7 @@ Ce qu'il faut voir :
 powershell -ExecutionPolicy Bypass -File scripts\install_task.ps1
 ```
 
-La tâche `TradeBotPaper` démarre du lundi au vendredi à 14h15, heure de Paris. Voici ce qu'elle fait :
+L'installation crée deux tâches : `TradeBotPaper`, le bot, et `TradeBotWatchdog`, le chien de garde (voir « Alertes »). La tâche `TradeBotPaper` démarre du lundi au vendredi à 14h15, heure de Paris. Voici ce qu'elle fait :
 - elle lance `bot.main --until-close` ;
 - le bot attend l'ouverture de New York ;
 - il rééquilibre si c'est sa première séance du mois, et vérifie le kill switch chaque minute ;
@@ -82,6 +82,38 @@ Le dashboard s'ouvre dans le navigateur sur http://localhost:8501. On peut le la
 - les métriques face à SPY et aux cibles de CLAUDE.md.
 
 Tant qu'il y a moins de 63 séances (3 mois), un avertissement rappelle que les chiffres annualisés ne sont pas significatifs.
+
+### Alertes
+
+Le bot prévient tout seul, sur ce PC (notification Windows) et sur le téléphone (application ntfy) :
+
+| Événement | Gravité |
+|---|---|
+| Kill switch déclenché, puis à chaque lancement tant qu'il n'est pas réarmé | critique |
+| Bot arrêté après des pannes répétées de l'API, ou en échec au démarrage | critique |
+| Bot sans signe de vie pendant une séance ouverte (chien de garde) | critique |
+| Ordres refusés par le module risque, regroupés par cycle | avertissement |
+| Rééquilibrage effectué, avec la liste des ordres | info |
+
+Le chien de garde est la tâche `TradeBotWatchdog`. Elle vérifie toutes les 30 minutes, de 14h45 à 22h45 en semaine, que le bot donne signe de vie. Hors séance, elle ne fait rien. Elle couvre ce que le bot ne peut pas signaler lui-même : un plantage, un PC redémarré, une tâche arrêtée.
+
+**Mise en place sur le téléphone :**
+1. Installer l'application ntfy (Android ou iOS).
+2. Choisir un nom de canal long et imprévisible : quiconque le connaît lit les alertes. Pour en générer un :
+
+   ```bash
+   uv run python -c "import secrets; print('tradebot-' + secrets.token_urlsafe(16))"
+   ```
+
+3. L'ajouter dans `.env` : `NTFY_TOPIC=tradebot-...`.
+4. S'abonner à ce canal dans l'application.
+5. Tester les deux canaux :
+
+   ```bash
+   uv run python -m bot.alerts --test
+   ```
+
+Les messages passent par le serveur public ntfy.sh. Ils contiennent des montants du compte paper, mais jamais de clé. Une alerte qui échoue est notée dans les logs, et elle ne bloque jamais le bot.
 
 ### En ligne de commande
 
@@ -134,4 +166,4 @@ Les positions du compte paper restent en place. Pour un arrêt d'urgence pendant
 - **Premier mois.** Lancé en milieu de mois, le bot rééquilibre dès sa première séance. Le backtest ne le fait qu'en début de mois : le premier mois diffère un peu.
 - **PC indisponible.** Un jour sans PC, le kill switch n'est pas surveillé. Si c'était le jour du rééquilibrage, il a lieu à la séance suivante du mois.
 - **Exécutions simulées.** Alpaca simule les exécutions paper, ce qui sous-estime le slippage réel. Les prix temps réel viennent du flux IEX.
-- **Pas d'alerte.** Rien n'est envoyé en cas de kill switch : il faut consulter `bot.status` ou le Planificateur.
+- **Alertes dépendantes du PC.** Les alertes partent de ce PC : s'il est éteint, ni le bot ni le chien de garde ne peuvent prévenir. Une séance sans aucune notification de rééquilibrage, en début de mois, est donc un signal à vérifier.

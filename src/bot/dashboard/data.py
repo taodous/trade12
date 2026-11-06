@@ -10,7 +10,6 @@ import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -21,7 +20,7 @@ from alpaca.trading.requests import GetPortfolioHistoryRequest
 from requests.exceptions import RequestException
 
 from audit.metrics import PerformanceMetrics, compute_metrics
-from bot.config import PROJECT_ROOT, ConfigError, StrategyConfig, load_settings
+from bot.config import ConfigError, StrategyConfig, load_settings
 from bot.data.market import (
     EXCHANGE_TIMEZONE,
     BarsClient,
@@ -33,9 +32,11 @@ from bot.data.market import (
 )
 from bot.execution.broker import Broker, BrokerError, EquitySample, MarketClock, PositionDetail
 from bot.execution.client import AccountDataError, PaperModeError, create_trading_client
-from bot.journal.store import EquityPoint, Journal
+from bot.heartbeat import Heartbeat, JournalView, bot_heartbeat, read_journal
 from bot.risk.state import RiskStateError
-from bot.status import LOG_PATTERN, BotStatus, StatusClient, build_status
+from bot.status import BotStatus, StatusClient, build_status
+
+__all__ = ["Heartbeat", "JournalView", "read_journal"]
 
 DAILY_TIMEFRAME = "1D"
 INTRADAY_REPORTING = "market_hours"
@@ -68,14 +69,6 @@ def connect() -> tuple[StatusClient, DashboardDataClient]:
     """Crée les clients paper en lecture : trading (compte, positions) et données (SPY)."""
     settings = load_settings()
     return create_trading_client(settings), create_data_client(settings)
-
-
-@dataclass(frozen=True)
-class Heartbeat:
-    """Dernier signe de vie du bot, d'après son fichier de log."""
-
-    last_seen: datetime | None
-    active: bool
 
 
 @dataclass(frozen=True)
@@ -115,33 +108,6 @@ class HistoryView:
         if len(values) < MIN_CURVE_POINTS:
             return None
         return float(values.iloc[-1] / values.iloc[0] - 1.0)
-
-
-def last_log_time(log_dir: Path) -> datetime | None:
-    """Retourne l'horodatage de la dernière ligne lisible du fichier de log le plus récent."""
-    files = sorted(log_dir.glob(LOG_PATTERN)) if log_dir.is_dir() else []
-    if not files:
-        return None
-    for line in reversed(files[-1].read_text(encoding="utf-8").splitlines()):
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        stamp = entry.get("timestamp") if isinstance(entry, dict) else None
-        if isinstance(stamp, str):
-            return datetime.fromisoformat(stamp)
-    return None
-
-
-def heartbeat(signals: Iterable[datetime | None], now: datetime, max_age: timedelta) -> Heartbeat:
-    """Le bot est actif si son dernier signe de vie est assez récent.
-
-    Avant l'ouverture, le bot logue à chaque tick. Une fois le cycle du jour terminé, il ne logue
-    plus, mais relève le capital à chaque tick : les deux signes sont donc nécessaires.
-    """
-    known = [signal for signal in signals if signal is not None]
-    last_seen = max(known) if known else None
-    return Heartbeat(last_seen, last_seen is not None and now - last_seen <= max_age)
 
 
 def session_equity(
@@ -234,36 +200,6 @@ def mean_slippage(decisions: Iterable[Mapping[str, Any]]) -> tuple[float | None,
     return (float(np.mean(values)) if values else None), len(values)
 
 
-@dataclass(frozen=True)
-class JournalView:
-    """Contenu du journal utile au dashboard. Vide si le bot n'a jamais tourné."""
-
-    decisions: list[dict[str, Any]]
-    equity: list[EquityPoint]
-
-    @property
-    def bot_sessions(self) -> list[date]:
-        """Séances où le bot a tourné, marché ouvert."""
-        return [point.session for point in self.equity]
-
-    @property
-    def last_record(self) -> datetime | None:
-        """Dernier relevé du capital, fait à chaque tick marché ouvert."""
-        return max((point.recorded_at for point in self.equity), default=None)
-
-
-def read_journal(config: StrategyConfig) -> JournalView:
-    """Lit le journal en lecture seule, sans jamais le créer."""
-    path = PROJECT_ROOT / config.live.journal_file
-    if not path.exists():
-        return JournalView([], [])
-    journal = Journal(path, read_only=True)
-    try:
-        return JournalView(journal.decisions(), journal.equity_history())
-    finally:
-        journal.close()
-
-
 def load_live(config: StrategyConfig, client: StatusClient, now: datetime) -> LiveView:
     """Lit l'état courant : compte, risque, positions, séance du jour et activité du bot."""
     broker = Broker(client, config.api_retry)
@@ -272,19 +208,12 @@ def load_live(config: StrategyConfig, client: StatusClient, now: datetime) -> Li
         timeframe=config.dashboard.intraday_timeframe,
         intraday_reporting=INTRADAY_REPORTING,
     )
-    max_age = timedelta(
-        seconds=config.live.poll_interval_seconds * config.dashboard.heartbeat_intervals
-    )
     return LiveView(
         status=build_status(config, client, now),
         clock=broker.clock(),
         positions=broker.position_details(),
         intraday=intraday_equity(broker.portfolio_history(request)),
-        heartbeat=heartbeat(
-            [last_log_time(PROJECT_ROOT / config.live.log_dir), read_journal(config).last_record],
-            now,
-            max_age,
-        ),
+        heartbeat=bot_heartbeat(config, now),
     )
 
 

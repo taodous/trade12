@@ -1,25 +1,25 @@
-[src/bot/dashboard/app.py] -> "Nouveau. Page Streamlit du dashboard, affichage seulement. Partie live, rafraîchie toutes les 15 s : capital, exposition, drawdown, état du bot et du marché, kill switch avec deux jauges, et des onglets (séance intraday, positions avec P&L latent et poids visé, 50 dernières décisions avec slippage, logs). Partie historique, rafraîchie toutes les 5 min : capital face à SPY, drawdown avec le seuil d'arrêt, métriques face à SPY et aux cibles, avec un avertissement de taille d'échantillon avant 63 séances. Une panne d'API affiche un message dans sa section, sans faire tomber la page."
+[src/bot/alerts.py] -> "Nouveau. Alertes sur deux canaux : notification Windows (PowerShell, sans dépendance, texte passé par l'environnement pour ne jamais être exécuté) et téléphone via ntfy (JSON UTF-8, le canal secret est dans le corps et jamais dans l'URL ni les logs). Une alerte qui échoue est journalisée sans bloquer le bot. Commande de test : python -m bot.alerts --test."
 
-[src/bot/dashboard/data.py] -> "Nouveau. Toutes les données du dashboard, sans Streamlit, en lecture seule : état du bot (réutilise bot.status), historique du capital Alpaca, SPY normalisé, drawdown, métriques (réutilise audit.metrics), tableau des décisions, slippage moyen. Le signe de vie du bot combine le dernier log et le dernier relevé du capital, car le bot ne logue plus une fois son cycle du jour fait. Les barres de SPY s'arrêtent à la veille, car l'abonnement gratuit refuse le SIP récent : le point du jour vient du dernier prix."
+[src/bot/main.py] -> "Le bot envoie une alerte critique au kill switch (puis à chaque lancement tant qu'il n'est pas réarmé), après des pannes répétées de l'API et en cas d'échec au démarrage. Il envoie aussi un avertissement groupé pour les ordres refusés par le risque, et un résumé à chaque rééquilibrage. Aucune alerte en dry-run. Les contrôles de risque ne changent pas."
 
-[src/bot/dashboard/__main__.py] -> "Nouveau. Commande python -m bot.dashboard : lance Streamlit sur localhost uniquement, sans télémétrie, et ouvre le navigateur."
+[src/bot/watchdog.py] -> "Nouveau. Chien de garde : si le marché est ouvert et que le bot ne donne plus signe de vie, alerte critique. Couvre le plantage, le PC redémarré, la tâche arrêtée. Lecture seule."
 
-[src/bot/dashboard/__init__.py] -> "Nouveau paquet du dashboard."
+[src/bot/heartbeat.py] -> "Nouveau. Signe de vie du bot (dernier log et dernier relevé du capital), sorti du dashboard pour être partagé avec le chien de garde."
 
-[.streamlit/config.toml] -> "Nouveau. Serveur local uniquement, sans télémétrie, thème clair."
+[src/bot/dashboard/data.py] -> "Utilise bot.heartbeat au lieu de son propre code de signe de vie. Affichage inchangé."
 
-[src/bot/execution/broker.py] -> "Ajout de position_details (prix moyen, prix courant, P&L latent) et de portfolio_history (historique du capital, sans les fenêtres inconnues ou à 0), avec backoff. Lecture seule : aucun changement sur les ordres."
+[src/bot/config.py, config/strategy.yaml] -> "Nouvelle section alerts (toast Windows, serveur ntfy, délai, alertes de refus et de rééquilibrage). NTFY_TOPIC, facultatif, est lu dans .env. Une variable vide de .env vaut absente, pour qu'un NTFY_TOPIC= copié de .env.example ne bloque pas le bot."
 
-[src/bot/status.py] -> "collect_status est découpé : build_status reçoit la configuration et le client, ce qui permet au dashboard de réutiliser ses clients. Le comportement de bot.status ne change pas."
+[.env.example] -> "Ajout de NTFY_TOPIC, facultatif, avec la consigne de choisir un nom imprévisible."
 
-[src/bot/config.py, config/strategy.yaml] -> "Nouvelle section dashboard : rafraîchissement, cache de l'historique, nombre de décisions, timeframe intraday, seuil de signe de vie, port, seuil d'échantillon des métriques."
+[scripts/install_task.ps1, scripts/uninstall_task.ps1] -> "Installent et retirent aussi la tâche TradeBotWatchdog : toutes les 30 minutes de 14h45 à 22h45 en semaine, sans fenêtre, avec réveil du PC. À relancer pour l'installer."
 
-[scripts/install_task.ps1] -> "La tâche tourne sans fenêtre console (conhost --headless). Le 2026-11-06, la fenêtre visible a été fermée, ce qui a arrêté le bot en pleine séance (code 0xC000013A). La tâche a été réinstallée et relancée."
+[docs/paper_trading.md, CLAUDE.md] -> "Section Alertes : événements, chien de garde, mise en place de ntfy sur le téléphone, test. Nouvelles commandes bot.alerts --test et bot.watchdog."
 
-[pyproject.toml, uv.lock] -> "Dépendances ajoutées : streamlit, et plotly, déjà installé via vectorbt mais désormais importé directement. Override mypy pour plotly, qui n'a pas de types. Le dashboard entre dans le calcul de couverture."
+[pyproject.toml] -> "Les modules d'alerte, de signe de vie et de chien de garde entrent dans le calcul de couverture."
 
-[docs/paper_trading.md, CLAUDE.md] -> "Section Dashboard et commande python -m bot.dashboard. La tâche sans fenêtre est documentée."
+[tests/test_alerts.py] -> "Nouveau. ntfy (JSON, canal hors URL, statut en erreur), toast (texte par l'environnement), alerteur qui survit à un canal en panne sans afficher le canal, choix des canaux, variable vide ignorée, commande de test, chien de garde (marché fermé, bot actif ou silencieux, signe de vie lu dans le journal)."
 
-[tests/test_dashboard.py] -> "Nouveau. 24 tests : broker (détails des positions, historique), calculs (signe de vie, capital par séance, benchmark aligné, drawdown, métriques, décisions, slippage), chargement avec de faux clients, journal jamais créé, page rendue avec AppTest (cas normal, kill switch déclenché, panne d'API et historique vide), lanceur sur localhost."
+[tests/test_main.py] -> "Nouveaux tests : résumé du rééquilibrage, refus groupés, alertes désactivables, kill switch, pannes répétées (et pas d'alerte en --once), échec au démarrage, aucune alerte en dry-run."
 
-[tests/test_main.py] -> "Le faux client Alpaca sait renvoyer un historique du capital."
+[tests/test_dashboard.py] -> "Tests du signe de vie déplacés vers bot.heartbeat."

@@ -21,10 +21,15 @@ class ConfigError(Exception):
 class Settings(BaseSettings):
     """Clés API du compte paper Alpaca, lues depuis l'environnement ou le fichier `.env`."""
 
-    model_config = SettingsConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+    # Une variable vide, comme `NTFY_TOPIC=` copié de .env.example, vaut absente.
+    model_config = SettingsConfigDict(
+        frozen=True, extra="ignore", hide_input_in_errors=True, env_ignore_empty=True
+    )
 
     alpaca_api_key: SecretStr = Field(min_length=1)
     alpaca_secret_key: SecretStr = Field(min_length=1)
+    # Canal ntfy des alertes téléphone. Quiconque le connaît lit les alertes : à garder secret.
+    ntfy_topic: SecretStr | None = Field(default=None, min_length=1)
 
 
 class RiskLimits(BaseModel):
@@ -220,6 +225,18 @@ class DashboardConfig(BaseModel):
     min_sessions_for_metrics: int = Field(gt=1)
 
 
+class AlertsConfig(BaseModel):
+    """Canaux et événements des alertes. Une alerte qui échoue ne bloque jamais le bot."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    windows_toast: bool
+    ntfy_server: str = Field(pattern=r"^https://")
+    timeout_seconds: float = Field(gt=0)
+    notify_rejections: bool
+    notify_rebalance: bool
+
+
 class WalkForwardConfig(BaseModel):
     """Fenêtres glissantes du walk-forward, en séances."""
 
@@ -398,6 +415,7 @@ class StrategyConfig(BaseModel):
     targets: PerformanceTargets
     live: LiveConfig
     dashboard: DashboardConfig
+    alerts: AlertsConfig
     api_retry: RetryConfig
     audit: AuditConfig
 

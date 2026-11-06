@@ -11,6 +11,7 @@ from alpaca.trading.models import Calendar, PortfolioHistory
 from alpaca.trading.requests import GetCalendarRequest, GetPortfolioHistoryRequest
 from streamlit.testing.v1 import AppTest
 
+from bot import heartbeat as heartbeat_module
 from bot.config import PROJECT_ROOT
 from bot.dashboard import __main__ as launcher
 from bot.dashboard import data
@@ -85,10 +86,10 @@ def test_portfolio_history_refuses_raw_response() -> None:
 
 
 def test_last_log_time_reads_the_last_valid_line(tmp_path: Path) -> None:
-    assert data.last_log_time(tmp_path / "absent") is None
+    assert heartbeat_module.last_log_time(tmp_path / "absent") is None
     lines = ['{"timestamp": "2026-11-09T17:58:00+00:00"}', "illisible", ""]
     (tmp_path / "bot-2026-11-09.jsonl").write_text("\n".join(lines), encoding="utf-8")
-    assert data.last_log_time(tmp_path) == datetime(2026, 11, 9, 17, 58, tzinfo=UTC)
+    assert heartbeat_module.last_log_time(tmp_path) == datetime(2026, 11, 9, 17, 58, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
@@ -102,7 +103,7 @@ def test_last_log_time_reads_the_last_valid_line(tmp_path: Path) -> None:
 def test_heartbeat_uses_the_latest_sign_of_life(
     signals: list[datetime | None], active: bool
 ) -> None:
-    assert data.heartbeat(signals, NOW, timedelta(minutes=3)).active is active
+    assert heartbeat_module.heartbeat(signals, NOW, timedelta(minutes=3)).active is active
 
 
 def test_session_equity_starts_from_previous_close_and_uses_live_value_today() -> None:
@@ -212,14 +213,14 @@ def test_decision_table_is_most_recent_first(tmp_path: Path) -> None:
 
 
 def test_read_journal_never_creates_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(data, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(heartbeat_module, "PROJECT_ROOT", tmp_path)
     config = make_config()
-    view = data.read_journal(config)
+    view = heartbeat_module.read_journal(config)
     assert (view.decisions, view.bot_sessions, view.last_record) == ([], [], None)
     assert not (tmp_path / config.live.journal_file).exists()
 
     write_journal(tmp_path / config.live.journal_file)
-    view = data.read_journal(config)
+    view = heartbeat_module.read_journal(config)
     assert view.bot_sessions == [TODAY]
     assert view.last_record == NOW - timedelta(minutes=1)
 
@@ -236,7 +237,7 @@ class CalendarFakeClient(FakeClient):
 
 def wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, client: FakeClient) -> None:
     wire_status(monkeypatch, tmp_path, client)
-    monkeypatch.setattr(data, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(heartbeat_module, "PROJECT_ROOT", tmp_path)
 
 
 def test_load_live_reads_account_positions_and_heartbeat(
@@ -311,7 +312,7 @@ def fake_live(**status: Any) -> data.LiveView:
         clock=MarketClock(True, NOW, NOW, NOW),
         positions=Broker(FakeClient(), make_config().api_retry).position_details(),
         intraday=data.intraday_equity([EquitySample(NOW, 95_000.0)]),
-        heartbeat=data.Heartbeat(NOW, True),
+        heartbeat=heartbeat_module.Heartbeat(NOW, True),
     )
 
 
@@ -332,7 +333,7 @@ def fake_history() -> data.HistoryView:
 def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AppTest:
     st.cache_data.clear()
     st.cache_resource.clear()
-    monkeypatch.setattr(data, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(heartbeat_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(data, "connect", lambda: (FakeClient(), object()))
     monkeypatch.setattr(data, "load_live", lambda *_: fake_live())
     monkeypatch.setattr(data, "load_history", lambda *_: fake_history())

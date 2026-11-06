@@ -171,6 +171,8 @@ uv run python -m bot.main --dry-run      # un cycle sans envoi d'ordre
 uv run python -m bot.main --until-close  # une séance puis arrêt (mode de la tâche planifiée)
 uv run python -m bot.status      # état du bot en lecture seule (capital, kill switch, positions, logs)
 uv run python -m bot.dashboard   # dashboard live sur http://localhost:8501, lecture seule
+uv run python -m bot.alerts --test  # teste les alertes (Windows et ntfy, NTFY_TOPIC dans .env)
+uv run python -m bot.watchdog    # vérifie une fois que le bot donne signe de vie (tâche TradeBotWatchdog)
 powershell -ExecutionPolicy Bypass -File scripts\install_task.ps1  # paper en veille, voir docs/paper_trading.md
 uv run python -m audit.report    # générer le rapport d'audit
 uv run python -m audit.candidates  # compare les variantes pré-enregistrées (in-sample)
