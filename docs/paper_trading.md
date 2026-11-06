@@ -43,7 +43,8 @@ Conditions côté PC :
 - **Session ouverte.** Le PC doit rester allumé, ou en veille, mais pas éteint, et ta session Windows doit être ouverte. Elle peut être verrouillée.
 - **Réveil.** La tâche réveille le PC s'il dort. Il faut que les « minuteurs de réveil » soient autorisés : Options d'alimentation, puis Paramètres avancés, puis Veille, puis Autoriser les minuteurs de réveil.
 - **Pas de veille pendant la séance.** Le bot l'empêche lui-même, l'écran peut s'éteindre.
-- **Lancement manqué.** Si le PC était éteint à 14h15, la tâche démarre dès qu'il est rallumé.
+- **Lancement manqué ou redémarrage.** Si le PC était éteint à 14h15, ou s'il a été éteint ou redémarré pendant la séance, la tâche repart à l'ouverture de ta session. Le bot reprend alors la séance en cours. Un week-end ou après la clôture, il s'arrête aussitôt.
+- **Batterie.** Sur batterie, Windows n'autorise pas les minuteurs de réveil par défaut. Laisse le PC branché.
 
 Pour essayer la tâche tout de suite :
 

@@ -24,7 +24,12 @@ New-Item -ItemType Directory -Force $logs | Out-Null
 # jetée, sauf les erreurs Python non prévues, gardées dans logs\stderr.log.
 $command = "set PYTHONUTF8=1&& `"$uv`" run python -m bot.main --until-close 1>NUL 2>>`"$logs\stderr.log`""
 $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/d /c `"$command`"" -WorkingDirectory $root
-$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $StartTime
+$user = "$env:USERDOMAIN\$env:USERNAME"
+$daily = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $StartTime
+# Après un arrêt ou un redémarrage du PC en pleine séance, l'ouverture de session relance le bot,
+# qui reprend la séance en cours. Un week-end ou après la clôture, il s'arrête aussitôt, et le
+# journal empêche de traiter deux fois la même séance.
+$logon = New-ScheduledTaskTrigger -AtLogOn -User $user
 $settings = New-ScheduledTaskSettingsSet `
     -WakeToRun `
     -StartWhenAvailable `
@@ -34,12 +39,12 @@ $settings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries
 # Session de l'utilisateur, sans élévation : aucun mot de passe n'est stocké. Le PC peut être
 # verrouillé, mais la session doit rester ouverte.
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $action `
-    -Trigger $trigger `
+    -Trigger $daily, $logon `
     -Settings $settings `
     -Principal $principal `
     -Description "Bot de trading, compte PAPER Alpaca uniquement. Voir docs\paper_trading.md." `
